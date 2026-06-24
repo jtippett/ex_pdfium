@@ -93,14 +93,26 @@ is now fully serialized process-wide — inherent to pdfium.)
   `#![deny(clippy::unwrap_used, clippy::expect_used)]` on the crate (one allowed
   `expect` at init). Map `PdfiumError` → `{:error, atom}`; never unwrap.
 
-### Carry into Phase 2 (render)
-- **Scheduler stall risk.** `DocumentResource::Drop` blocks on `PDFIUM_LOCK` and
-  runs during a process's GC on a *normal* scheduler. With only load/page_count
-  under the lock (sub-ms) this is fine. Once `render_page` (CPU-heavy, can hold
-  the lock for hundreds of ms) lands, a GC-time close can block past the ~1ms
-  budget → "long_schedule" warnings / stalls. Fix when rendering lands: defer the
-  close (a dedicated cleanup thread, or release off the scheduler) rather than
-  blocking the destructor.
+### Phase 2 done — render_page (committed)
+`ExPdfium.render_page/3` → `%Bitmap{data,width,height,stride,format}` (4-channel,
+Vix-ready). Sizing `:dpi`/`:scale`/`:width`/`:height`; `:format` `:rgba`(default,
+via pdfium reverse-byte-order)/`:bgra`; `:background` `:white`(default)/`:transparent`.
+`stride` derived from the buffer, not assumed. 300 DPI letter ≈ 19ms. 29 tests
+(incl. byte-order on a colored fixture, render concurrency, GC-close-under-load).
+
+- **Scheduler-stall fixed.** The GC `DocumentResource::Drop` no longer blocks on
+  `PDFIUM_LOCK`; it hands the document to a dedicated cleanup thread that closes
+  it under the lock off-scheduler (`CLEANUP`/`cleanup_sender`). `close/1` (a dirty
+  NIF) still closes synchronously. Consequence: GC close is async — `close/1` for
+  deterministic release (documented).
+- **MSRV bumped 1.78 → 1.82** (the 1.78 was an arbitrary scaffold floor; we ship
+  precompiled + build on stable, so it only constrained our own code).
+
+### Carry into Phase 3 (text extraction)
+- pdfium-render exposes page text + per-char geometry + search. Start with plain
+  text (`extract_text(doc, page_index)` + whole-doc), then bounding boxes, then
+  in-page search. Same discipline: all under `PDFIUM_LOCK` via `with_pdfium`;
+  fetch the page per call, don't store it; map `PdfiumError` → atoms.
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
   `.set()`s a `OnceLock` and never checks `PDFIUM`. Fine for test_helper (runs
   first), but when it grows a real return, consider checking `PDFIUM.get().is_some()`
