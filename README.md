@@ -8,9 +8,9 @@ Chromium PDF engine — via the Rust
 No Rust toolchain. No separately-installed pdfium. Add the dep and go.
 
 > **Status: early.** Opening documents, page counts, rendering, text
-> extraction/search, metadata, page geometry, and permissions work today
-> (precompiled, `v0.1`+). Structure (bookmarks/links/attachments) and read forms
-> are landing phase by phase — see [`PORTING.md`](PORTING.md).
+> extraction/search, metadata, page geometry, permissions, and structure
+> (bookmarks/links/attachments) work today (precompiled, `v0.1`+). Read forms and
+> annotations are next — see [`PORTING.md`](PORTING.md).
 
 ## Why
 
@@ -91,6 +91,20 @@ uncompressed 4-channel buffer (`width * height * 4` bytes).
 
 {:ok, perms} = ExPdfium.permissions(doc)
 # => %{print_high_quality: true, extract_text_and_graphics: true, modify_content: true, ...}
+```
+
+### Structure & navigation
+
+```elixir
+{:ok, tree} = ExPdfium.outline(doc)        # bookmark tree
+# => [%{title: "Chapter 1", page: 0, children: [%{title: "1.1", page: 0, children: []}]}, ...]
+
+{:ok, links} = ExPdfium.links(doc, 0)      # links on a page
+# => [%{bounds: %{...}, uri: "https://example.com", page: nil},
+#     %{bounds: %{...}, uri: nil, page: 1}]               # internal link to page 1
+
+{:ok, files} = ExPdfium.attachments(doc)   # => [%{index: 0, name: "note.txt", size: 25}]
+{:ok, bytes} = ExPdfium.attachment_data(doc, 0)
 ```
 
 ## Development

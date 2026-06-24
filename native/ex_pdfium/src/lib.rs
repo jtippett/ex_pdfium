@@ -85,6 +85,9 @@ mod atoms {
         fill_form_fields,
         create_form_fields,
         annotate,
+        // structure & navigation
+        attachment_not_found,
+        attachment_failed,
     }
 }
 
@@ -868,6 +871,147 @@ fn document_permissions(doc: ResourceArc<DocumentResource>) -> Result<Vec<(Atom,
                 p.can_add_or_modify_text_annotations().unwrap_or(false),
             ),
         ])
+    })
+}
+
+// ── Structure & navigation ───────────────────────────────────────────────────
+
+// A bookmark/outline node. NifMap encodes it as %{title:, page:, children:}.
+#[derive(rustler::NifMap)]
+struct Bookmark {
+    title: String,
+    page: Option<u32>,
+    children: Vec<Bookmark>,
+}
+
+// Bound the outline walk so a malicious/cyclic bookmark graph can't blow the
+// stack or memory (pdfium-render's own iterator guards against cycles too).
+const MAX_OUTLINE_DEPTH: usize = 64;
+const MAX_OUTLINE_NODES: usize = 50_000;
+
+fn build_bookmark(bookmark: &PdfBookmark, depth: usize, budget: &mut usize) -> Bookmark {
+    let title = bookmark.title().unwrap_or_default();
+    let page = bookmark
+        .destination()
+        .and_then(|d| d.page_index().ok())
+        .map(u32::from);
+
+    let mut children = Vec::new();
+    if depth < MAX_OUTLINE_DEPTH {
+        let mut child = bookmark.first_child();
+        while let Some(node) = child {
+            if *budget == 0 {
+                break;
+            }
+            *budget -= 1;
+            children.push(build_bookmark(&node, depth + 1, budget));
+            child = node.next_sibling();
+        }
+    }
+
+    Bookmark {
+        title,
+        page,
+        children,
+    }
+}
+
+/// Phase 5: the document outline (bookmarks) as a nested tree.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_outline(doc: ResourceArc<DocumentResource>) -> Result<Vec<Bookmark>, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+
+        let mut budget = MAX_OUTLINE_NODES;
+        let mut top = Vec::new();
+        let mut node = document.bookmarks().root();
+        while let Some(bookmark) = node {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            top.push(build_bookmark(&bookmark, 0, &mut budget));
+            node = bookmark.next_sibling();
+        }
+        Ok(top)
+    })
+}
+
+// (bounds, uri, page): `uri` for a web link, `page` for an internal destination.
+type Link = (Option<Rect>, Option<String>, Option<u32>);
+
+/// Phase 5: links on a page. `uri` for a web link, `page` for an internal
+/// destination (0-indexed); both may be nil.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_links(doc: ResourceArc<DocumentResource>, page_index: u32) -> Result<Vec<Link>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+
+        let links = page
+            .links()
+            .iter()
+            .map(|link| {
+                let bounds = link.rect().ok().map(|r| rect_of(&r));
+                let uri = link
+                    .action()
+                    .and_then(|a| a.as_uri_action().and_then(|u| u.uri().ok()));
+                let dest_page = link
+                    .destination()
+                    .and_then(|d| d.page_index().ok())
+                    .map(u32::from);
+                (bounds, uri, dest_page)
+            })
+            .collect();
+        Ok(links)
+    })
+}
+
+/// Phase 5: list embedded files as `(name, size)` pairs.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_attachments(doc: ResourceArc<DocumentResource>) -> Result<Vec<(String, u32)>, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let list = document
+            .attachments()
+            .iter()
+            .map(|a| (a.name(), a.len() as u32))
+            .collect();
+        Ok(list)
+    })
+}
+
+/// Phase 5: extract one embedded file's bytes.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_attachment_data<'a>(
+    env: Env<'a>,
+    doc: ResourceArc<DocumentResource>,
+    index: u32,
+) -> Result<Binary<'a>, Atom> {
+    let index: u16 = index
+        .try_into()
+        .map_err(|_| atoms::attachment_not_found())?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let attachment = document
+            .attachments()
+            .get(index)
+            .map_err(|_| atoms::attachment_not_found())?;
+        let bytes = attachment
+            .save_to_bytes()
+            .map_err(|_| atoms::attachment_failed())?;
+
+        let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
+        binary.as_mut_slice().copy_from_slice(&bytes);
+        Ok(binary.release(env))
     })
 }
 

@@ -64,4 +64,10 @@ defmodule ExPdfium.Native do
   def document_metadata(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_page_info(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
   def document_permissions(_doc), do: :erlang.nif_error(:nif_not_loaded)
+
+  # Phase 5 — structure & navigation.
+  def document_outline(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_links(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+  def document_attachments(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_attachment_data(_doc, _index), do: :erlang.nif_error(:nif_not_loaded)
 end

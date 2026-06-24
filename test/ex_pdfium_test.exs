@@ -8,6 +8,7 @@ defmodule ExPdfiumTest do
   @text Path.join(@fixtures, "text.pdf")
   @meta Path.join(@fixtures, "meta.pdf")
   @restricted Path.join(@fixtures, "restricted.pdf")
+  @structure Path.join(@fixtures, "structure.pdf")
 
   describe "Phase 0: the NIF loads and pdfium initializes" do
     test "pdfium_version/0 returns a string" do
@@ -480,6 +481,118 @@ defmodule ExPdfiumTest do
       {:ok, doc} = ExPdfium.open(@sample)
       :ok = ExPdfium.close(doc)
       assert {:error, :document_closed} = ExPdfium.permissions(doc)
+    end
+  end
+
+  describe "Phase 5: outline (bookmarks)" do
+    test "outline/1 returns the nested bookmark tree" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      assert {:ok, [ch1, ch2]} = ExPdfium.outline(doc)
+
+      assert ch1.title == "Chapter 1"
+      assert ch1.page == 0
+      assert [sec] = ch1.children
+      assert sec.title == "Section 1.1"
+      assert sec.page == 0
+      assert sec.children == []
+
+      assert ch2.title == "Chapter 2"
+      assert ch2.page == 1
+      assert ch2.children == []
+    end
+
+    test "a document with no outline returns an empty list" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, []} = ExPdfium.outline(doc)
+    end
+
+    test "outline on a closed document" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.outline(doc)
+    end
+  end
+
+  describe "Phase 5: links" do
+    test "links/2 returns web, internal, and unsupported links with bounds" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      assert {:ok, links} = ExPdfium.links(doc, 0)
+      assert length(links) == 3
+
+      web = Enum.find(links, &(&1.uri != nil))
+      assert web.uri =~ "example.com"
+      assert web.bounds.left < web.bounds.right
+
+      internal = Enum.find(links, &(&1.page != nil))
+      assert internal.page == 1
+
+      # A link with neither a URI nor a destination still appears, with both nil.
+      unsupported = Enum.find(links, &(&1.uri == nil and &1.page == nil))
+      assert unsupported != nil
+    end
+
+    test "a page with no links returns an empty list" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      assert {:ok, []} = ExPdfium.links(doc, 1)
+    end
+
+    test "links error cases" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      assert {:error, :page_out_of_bounds} = ExPdfium.links(doc, 99)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.links(doc, 0)
+    end
+  end
+
+  describe "Phase 5: attachments" do
+    test "attachments/1 lists embedded files; attachment_data/2 extracts them" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      assert {:ok, [att]} = ExPdfium.attachments(doc)
+      assert att.index == 0
+      assert att.name == "note.txt"
+      assert att.size > 0
+
+      assert {:ok, data} = ExPdfium.attachment_data(doc, 0)
+      assert data =~ "hello from an attachment"
+    end
+
+    test "a document with no attachments returns an empty list" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, []} = ExPdfium.attachments(doc)
+    end
+
+    test "attachment_data for a bad index" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      assert {:error, :attachment_not_found} = ExPdfium.attachment_data(doc, 99)
+    end
+
+    test "attachments and attachment_data on a closed document" do
+      {:ok, doc} = ExPdfium.open(@structure)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.attachments(doc)
+      assert {:error, :document_closed} = ExPdfium.attachment_data(doc, 0)
+    end
+  end
+
+  describe "Phase 5: concurrency" do
+    test "outline/links/attachments are safe under concurrency" do
+      {:ok, doc} = ExPdfium.open(@structure)
+
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn _ ->
+            {:ok, [_, _]} = ExPdfium.outline(doc)
+            {:ok, links} = ExPdfium.links(doc, 0)
+            {:ok, [att]} = ExPdfium.attachments(doc)
+            length(links) == 3 and att.name == "note.txt"
+          end,
+          max_concurrency: 32,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
     end
   end
 

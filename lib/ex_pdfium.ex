@@ -7,9 +7,9 @@ defmodule ExPdfium do
 
   > #### Work in progress {: .info}
   > Opening documents, page counts, rendering, text extraction/search, metadata,
-  > page geometry, and permissions work today. Structure (bookmarks/links/
-  > attachments) and read forms are landing phase by phase — see `PORTING.md`.
-  > Functions for unimplemented phases raise until then.
+  > page geometry, permissions, and structure (bookmarks/links/attachments) work
+  > today. Read forms and annotations are landing phase by phase — see
+  > `PORTING.md`. Functions for unimplemented phases raise until then.
 
   ## Example
 
@@ -291,6 +291,77 @@ defmodule ExPdfium do
       {:error, _} = err -> err
     end
   end
+
+  @doc """
+  Return the document outline (bookmarks) as a nested tree.
+
+  Each node is `%{title: String.t(), page: non_neg_integer() | nil, children:
+  [node]}`, where `page` is the 0-indexed destination page (or `nil`). A document
+  with no outline returns `{:ok, []}`.
+
+  `page` is `nil` for a bookmark whose target is a GoTo *action* rather than a
+  `/Dest`. The tree is capped (depth 64, 50_000 nodes) to bound pathological or
+  cyclic outlines; beyond that it is silently truncated.
+  """
+  @spec outline(Document.t()) :: {:ok, [map()]} | {:error, atom()}
+  def outline(%Document{ref: ref}), do: Native.document_outline(ref)
+
+  @doc """
+  Return the links on a 0-indexed page.
+
+  Each link is `%{bounds: t:bounds/0 | nil, uri: String.t() | nil, page:
+  non_neg_integer() | nil}` — `uri` for a web link, `page` for an internal
+  `/Dest` destination. `bounds` is `nil` if the link has no rectangle; `uri` and
+  `page` are both `nil` for an unsupported or action-based link.
+  """
+  @spec links(Document.t(), non_neg_integer()) ::
+          {:ok, [%{bounds: bounds() | nil, uri: String.t() | nil, page: non_neg_integer() | nil}]}
+          | {:error, atom()}
+  def links(%Document{ref: ref}, page_index) do
+    case Native.document_links(ref, page_index) do
+      {:ok, links} ->
+        {:ok,
+         Enum.map(links, fn {bounds, uri, page} ->
+           %{bounds: opt_rect(bounds), uri: uri, page: page}
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  List the document's embedded files.
+
+  Each is `%{index: non_neg_integer(), name: String.t(), size: non_neg_integer()}`.
+  Use `attachment_data/2` with the `index` to extract the bytes.
+  """
+  @spec attachments(Document.t()) ::
+          {:ok, [%{index: non_neg_integer(), name: String.t(), size: non_neg_integer()}]}
+          | {:error, atom()}
+  def attachments(%Document{ref: ref}) do
+    case Native.document_attachments(ref) do
+      {:ok, list} ->
+        {:ok,
+         list
+         |> Enum.with_index()
+         |> Enum.map(fn {{name, size}, index} -> %{index: index, name: name, size: size} end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Extract the bytes of the embedded file at `index` (see `attachments/1`).
+
+  Returns `{:error, :attachment_not_found}` for an invalid index, or
+  `{:error, :attachment_failed}` if pdfium cannot read the file data.
+  """
+  @spec attachment_data(Document.t(), non_neg_integer()) ::
+          {:ok, binary()} | {:error, atom()}
+  def attachment_data(%Document{ref: ref}, index),
+    do: Native.document_attachment_data(ref, index)
 
   @doc """
   Explicitly close a document, releasing pdfium memory early. Optional and

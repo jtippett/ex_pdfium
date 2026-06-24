@@ -8,6 +8,12 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- Phase 5 — structure & navigation:
+  - `ExPdfium.outline/1` → the bookmark tree (`%{title, page, children}` nodes).
+  - `ExPdfium.links/2` → a page's links (`%{bounds, uri, page}`; `uri` for web
+    links, `page` for internal destinations).
+  - `ExPdfium.attachments/1` → embedded files (`%{index, name, size}`) and
+    `ExPdfium.attachment_data/2` → an attachment's bytes.
 - Phase 4 — metadata, page geometry & permissions:
   - `ExPdfium.metadata/1` → document info map (title/author/subject/keywords/
     creator/producer/creation_date; `modification_date` is usually `nil`, a
