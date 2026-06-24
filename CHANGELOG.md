@@ -7,9 +7,14 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-24
+
+First release — Phase 0: proves the toolchain and the precompiled-release path
+end to end. PDF document/page/text APIs land in later phases (see `PORTING.md`).
+
 ### Added
-- Initial scaffold: project structure, `rustler_precompiled` config, tag-driven
-  release pipeline, and the porting plan (`PORTING.md`).
+- Project scaffold: `rustler_precompiled` config, tag-driven release pipeline,
+  and the porting plan (`PORTING.md`).
 - Phase 0 (toolchain): `ExPdfium.pdfium_version/0`, a load-proof NIF that binds
   and initializes pdfium. Pinned `pdfium-render = "=0.8.37"`. The dev/test build
   binds pdfium dynamically; the libpdfium directory is passed to the NIF via
