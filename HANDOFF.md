@@ -116,13 +116,25 @@ via pdfium reverse-byte-order)/`:bgra`; `:background` `:white`(default)/`:transp
 (`left()/top()/...`) — direct field access is deprecated and trips clippy. 2-page
 text fixture (qpdf-built, pdftotext-verified). 44 tests.
 
-### Carry into Phase 4 (metadata, geometry, permissions)
-- All free from pdfium-render: `metadata()` (title/author/subject/keywords/
-  creator/producer/dates), page `page_size`/rotation/label/boundary boxes,
-  `permissions()`. Same discipline (under `PDFIUM_LOCK`, per-call page fetch,
-  map errors). Metadata is doc-level (no page fetch); geometry is per-page.
-  Watch for deprecated direct-field access on geometry types — use accessor
-  methods (the Phase 3 `PdfRect` lesson).
+### Phase 4 done — metadata, geometry, permissions (committed)
+`metadata/1`, `page_info/2`, `permissions/1`. rustler tuples max at 7 → metadata/
+permissions return `Vec<(Atom, value)>` lists; Elixir builds maps. 54 tests.
+
+**pdfium/pdfium-render quirks found (exposed faithfully + documented):**
+- `permissions/1` returns `{:error, :unsupported_security}` for AES-256/PDF-2.0
+  (security-handler revisions 5-6) — pdfium-render can't read those, so every
+  `can_*` errors; we surface that instead of a misleading all-false set.
+- `modification_date` is usually nil: pdfium-render queries `"ModificationDate"`,
+  not the PDF-standard `/ModDate`. (`creation_date` works.)
+- pdfium gives no crop→media fallback; undefined boxes are nil.
+
+### Carry into Phase 5 (structure & navigation)
+- Bookmarks/outline tree (`document.bookmarks()`), per-page links (web URLs +
+  internal destinations), attachments (`document.attachments()` — list + extract
+  bytes). Same discipline (`PDFIUM_LOCK`, map errors). Outline is a tree → decide
+  a flat-with-depth vs nested shape. Links are per-page (fetch page). Attachments
+  are doc-level. Reuse the `Vec<(Atom, value)>`/nested-tuple marshalling pattern;
+  remember the 7-element tuple cap.
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
   `.set()`s a `OnceLock` and never checks `PDFIUM`. Fine for test_helper (runs
   first), but when it grows a real return, consider checking `PDFIUM.get().is_some()`
