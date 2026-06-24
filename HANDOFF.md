@@ -128,13 +128,19 @@ permissions return `Vec<(Atom, value)>` lists; Elixir builds maps. 54 tests.
   not the PDF-standard `/ModDate`. (`creation_date` works.)
 - pdfium gives no crop→media fallback; undefined boxes are nil.
 
-### Carry into Phase 5 (structure & navigation)
-- Bookmarks/outline tree (`document.bookmarks()`), per-page links (web URLs +
-  internal destinations), attachments (`document.attachments()` — list + extract
-  bytes). Same discipline (`PDFIUM_LOCK`, map errors). Outline is a tree → decide
-  a flat-with-depth vs nested shape. Links are per-page (fetch page). Attachments
-  are doc-level. Reuse the `Vec<(Atom, value)>`/nested-tuple marshalling pattern;
-  remember the 7-element tuple cap.
+### Phase 5 done — structure & navigation (committed)
+`outline/1` (nested bookmark tree via recursive `#[derive(NifMap)]` struct, capped
+depth 64 / 50k nodes for cycle safety), `links/2` (bounds + uri|page), `attachments/1`
++ `attachment_data/2`. 65 tests. Hand-built `structure.pdf` (pdfium can't read
+pdfattach's attachment streams — hand-wrote the `/EmbeddedFile`). clippy
+`type_complexity` fires on a 3-field tuple Vec return → use a `type` alias.
+
+### Carry into Phase 6 (forms & annotations — read)
+- AcroForm fields (`document.form()` / page form field objects) — read values;
+  filling is borderline-write, gate it. Annotations (`page.annotations()`) — read
+  type/contents/bounds. XFA/JS need the V8 pdfium build we don't ship — note it.
+  Same discipline. After Phase 6, the read-only scope (PORTING §3) is complete;
+  the remaining PORTING items are explicitly out of scope (write/edit).
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
   `.set()`s a `OnceLock` and never checks `PDFIUM`. Fine for test_helper (runs
   first), but when it grows a real return, consider checking `PDFIUM.get().is_some()`
