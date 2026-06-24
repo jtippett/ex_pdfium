@@ -30,10 +30,21 @@ already anticipated. Proven locally on macOS arm64. `release.yml` rewritten for
 this; the `static`/`libcpp`/`libstdcpp` features are kept only for a
 user-supplied `.a`.
 
-**Still TODO in Phase 0:** tag `v0.1.0`, watch the build matrix attach one
-bundled tarball per target, regen the checksum file, and prove a clean
-precompiled `mix deps.get` on this machine. (User gave go-ahead to push + test
-releasing; `hex.publish` stays gated by the `hex` environment.)
+**Phase 0 is DONE end-to-end. `v0.1.0` is released and the whole point is
+proven.** The tag built 4 bundled tarballs (NIF + libpdfium each), the GitHub
+release has all 4, the checksum file is regenerated + committed, and a clean
+precompiled install on this machine (aarch64-apple-darwin / OTP 29) works: `mix
+compile` with no `EXPDFIUM_BUILD` downloaded the NIF, and `pdfium_version/0`
+returned `pdfium loaded` via the bundled libpdfium — **no Rust toolchain, no
+separately-installed pdfium**, dev libpdfium hidden.
+
+- **x86_64-apple-darwin is cross-compiled on the arm64 `macos-latest` runner**
+  (no C link at build time → no Intel runner needed; macos-13 queues forever).
+- **NOT on Hex.** The `Publish to Hex` job ran and **failed at auth** (no
+  `HEX_API_KEY` secret, no `hex` environment configured) — safe, nothing
+  published. To actually publish: add the `HEX_API_KEY` repo secret, configure a
+  `hex` environment with a required reviewer (so it pauses), and re-run/re-tag —
+  **with a fresh go-ahead.**
 
 > **Known limitation:** a *from-source* consumer build (force_build / unsupported
 > target) compiles the NIF but does NOT auto-bundle libpdfium — such users must
