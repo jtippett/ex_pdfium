@@ -108,11 +108,21 @@ via pdfium reverse-byte-order)/`:bgra`; `:background` `:white`(default)/`:transp
 - **MSRV bumped 1.78 → 1.82** (the 1.78 was an arbitrary scaffold floor; we ship
   precompiled + build on stable, so it only constrained our own code).
 
-### Carry into Phase 3 (text extraction)
-- pdfium-render exposes page text + per-char geometry + search. Start with plain
-  text (`extract_text(doc, page_index)` + whole-doc), then bounding boxes, then
-  in-page search. Same discipline: all under `PDFIUM_LOCK` via `with_pdfium`;
-  fetch the page per call, don't store it; map `PdfiumError` → atoms.
+### Phase 3 done — text extraction & search (committed)
+`extract_text/2` (page) + `extract_text/1` (whole doc, `\f`-joined); `text_segments/2`
+(runs + bounds in PDF points, origin bottom-left); `search_text/3,4` (`:match_case`,
+`:whole_word`) → `%{text, rects}`. NIFs return tuples; Elixir maps to maps with
+`%{left,bottom,right,top}`. Used the non-deprecated `PdfRect` accessors
+(`left()/top()/...`) — direct field access is deprecated and trips clippy. 2-page
+text fixture (qpdf-built, pdftotext-verified). 44 tests.
+
+### Carry into Phase 4 (metadata, geometry, permissions)
+- All free from pdfium-render: `metadata()` (title/author/subject/keywords/
+  creator/producer/dates), page `page_size`/rotation/label/boundary boxes,
+  `permissions()`. Same discipline (under `PDFIUM_LOCK`, per-call page fetch,
+  map errors). Metadata is doc-level (no page fetch); geometry is per-page.
+  Watch for deprecated direct-field access on geometry types — use accessor
+  methods (the Phase 3 `PdfRect` lesson).
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
   `.set()`s a `OnceLock` and never checks `PDFIUM`. Fine for test_helper (runs
   first), but when it grows a real return, consider checking `PDFIUM.get().is_some()`
