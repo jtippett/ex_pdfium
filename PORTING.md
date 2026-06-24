@@ -196,9 +196,21 @@ Each phase: implement the NIF(s), add the Elixir API + struct, write tests
 (`EXPDFIUM_BUILD=1 mix test`), update README + CHANGELOG + an `examples/*.exs`,
 keep CI green. Tag a release when a phase is a meaningful user-facing increment.
 
-### Phase 0 — Toolchain & release pipeline (do this FIRST, before any PDF logic)
-The single biggest risk is the static-link + precompiled-release path, so prove
-it with a **trivial** NIF before writing real rendering code.
+> **Scope (decided 2026-06-24):** ExPdfium is a **read & extract toolkit** —
+> render + everything you can pull *out* of a PDF — not a PDF editor. Priorities
+> ordered: text extraction → metadata/geometry → structure/nav; read forms &
+> annotations next. **Write/edit (create/merge/split/save) is explicitly out of
+> scope** for now — revisit only on real demand. Keep the surface read-only and
+> tight.
+
+### Phase 0 — Toolchain & release pipeline ✅ DONE (v0.1.0 released)
+**Shipped.** The static-link plan proved infeasible (bblanchon ships no
+`libpdfium.a`); we **bundle the dynamic libpdfium** in each per-target tarball
+and the NIF self-locates it via `dladdr`. `v0.1.0` released; clean precompiled
+install verified on macOS arm64 / OTP 29. (See HANDOFF for the full story.)
+
+Original Phase 0 goal, for reference: prove the precompiled-release path with a
+trivial NIF before writing real rendering code.
 
 - [ ] `cargo add pdfium-render` in `native/ex_pdfium`; pin the resolved version
       exactly in `Cargo.toml`. Add `rustler = "0.38"`.
@@ -237,20 +249,31 @@ it with a **trivial** NIF before writing real rendering code.
       `Image`) can use it directly — preserve the old README's recipe.
 - [ ] Bench a high-DPI render; confirm DirtyCpu (not a normal scheduler).
 
-### Phase 3 — Page geometry & document metadata
-- [ ] `page_size/2` (points), page label, rotation; document `metadata/1`
-      (title/author/dates), pdfium version. All free from pdfium-render.
-
-### Phase 4 — Text extraction
+### Phase 3 — Text extraction & search (the headline capability)
 - [ ] `extract_text(doc, page_index)` and whole-doc text. pdfium-render exposes
-      page text + per-character geometry; start with plain text, add bounding
-      boxes only if asked. (Capability the old library never had.)
+      page text + per-character geometry; start with plain text.
+- [ ] Text with bounding boxes (per-char / per-segment geometry) for layout-aware
+      consumers — add behind a clear option.
+- [ ] In-page text search. (None of this existed in the old library.)
 
-### Phase 5+ (optional, demand-driven)
-- [ ] Render straight to PNG (pdfium-render `image` feature) as a convenience.
-- [ ] Form fields, annotations, attachments, bookmarks/outline, page
-      thumbnails — each its own small phase, behind the same gate. Only build
-      what someone asks for; keep the default surface tight.
+### Phase 4 — Metadata, page geometry & permissions
+- [ ] `metadata/1`: title/author/subject/keywords/creator/producer/dates.
+- [ ] `page_size/2` (points), rotation, page label, boundary boxes
+      (media/crop/bleed/trim/art).
+- [ ] `permissions/1`: what the document allows (print/copy/…).
+
+### Phase 5 — Structure & navigation
+- [ ] Bookmarks/outline tree, per-page links (web URLs + internal destinations),
+      attachments (list + extract embedded file bytes).
+
+### Phase 6 — Forms & annotations (read)
+- [ ] AcroForm fields (read values; filling is borderline-write — gate it).
+      Annotations (read). XFA/JS need the V8 pdfium build we don't ship — note it.
+
+### Out of scope (read-only library) — revisit only on demand
+Write/edit: create PDFs, add/copy/delete/reorder/rotate pages, merge/split,
+stamp/watermark, flatten, save → bytes/file. Also niche read: embedded
+thumbnails, signature info, render-straight-to-PNG convenience.
 
 ---
 
