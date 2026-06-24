@@ -142,15 +142,29 @@ documents from different threads. BEAM **dirty schedulers run on a pool of OS
 threads**, so naive NIFs would call pdfium concurrently → UB/crashes.
 
 Two things make this safe; use both:
-- **`pdfium-render`'s `thread_safe` feature** wraps every pdfium call in an
-  internal mutex. Enable it. This is the analog to ex_bashkit's single shared
-  tokio runtime — here it's a single serialized library.
-- **Initialize the `Pdfium` instance exactly once**, in a `OnceLock` (or
-  `once_cell`), and hand out `&'static` references. Never construct it per call.
+- **Serialize every pdfium call through one global `Mutex` that WE own.**
+  ⚠️ **Correction (Phase 1, verified in the 0.8.37 source):** pdfium-render's
+  `thread_safe` feature does **NOT** wrap each call in a mutex — it only holds a
+  lock across library `Init`/`Destroy`; data calls (`FPDF_LoadMemDocument`,
+  `FPDF_GetPageCount`, render, `FPDF_CloseDocument`, …) run with **no** lock. The
+  BEAM calls our dirty NIFs from many OS threads, so without our own lock pdfium
+  is hit concurrently → corruption (intermittent `:invalid_pdf`, crashes). So:
+  keep a `static PDFIUM_LOCK: Mutex<()>` and take it around **every**
+  pdfium-touching operation, document close/drop included (`FPDF_CloseDocument`
+  is a pdfium call). A concurrency test (fan-out open/count/close) is mandatory —
+  it caught exactly this.
+- **The `sync` feature is still required**, but only for its `unsafe impl
+  Send + Sync` on `Pdfium`/`PdfDocument` (so they can live in a `static` /
+  `ResourceArc`). That `unsafe` is sound *because* `PDFIUM_LOCK` makes access
+  effectively single-threaded. (`sync` implies `thread_safe`; the Init/Destroy
+  bracketing is harmless.)
+- **Initialize the `Pdfium` instance exactly once**, in a `OnceLock`, and hand
+  out `&'static` references. Never construct it per call.
 
-Even with `thread_safe`, treat pdfium as a single global resource: all NIFs that
-touch it are **`DirtyCpu`** (rendering is CPU-heavy and routinely exceeds the 1ms
-budget that would stall a normal scheduler).
+All NIFs that touch pdfium are **`DirtyCpu`** (rendering is CPU-heavy and exceeds
+the 1ms budget that would stall a normal scheduler; and they may block on
+`PDFIUM_LOCK`). Consequence: pdfium work is fully serialized process-wide — one
+render/parse at a time. That's inherent to pdfium, not a limitation we chose.
 
 ### c) Lifetimes — `PdfDocument<'a>` borrows from `Pdfium`
 This is the one real Rust-ergonomics puzzle. In pdfium-render, `PdfDocument`,
@@ -168,11 +182,14 @@ resources are `'static`). Resolve it with **a single `'static` Pdfium**:
 - Put the `Pdfium` in a `OnceLock<Pdfium>` → `&'static Pdfium`. Now
   `PdfDocument<'static>` is possible (it borrows the static), and **can** live in
   a `ResourceArc`.
-- Wrap the document in `ResourceArc<Mutex<PdfDocument<'static>>>` (the mutex is
-  belt-and-suspenders over `thread_safe`, and serializes multi-step ops on one
-  doc). Drop = pdfium closes the document → **fixes the old API's manual
-  `close_document` leak risk**; expose an explicit `close/1` only as an optional
-  early-release that `.take()`s an `Option`.
+- Wrap the document in `ResourceArc<Mutex<Option<PdfDocument<'static>>>>`. The
+  `Option` lets `close/1` `.take()` and drop early; the `Mutex` gives interior
+  mutability + the `Send + Sync` the resource needs. (Cross-thread *call*
+  serialization is `PDFIUM_LOCK`'s job, see §2b — this per-doc mutex is not it.)
+  Drop = pdfium closes the document → **fixes the old API's manual
+  `close_document` leak risk**. Implement `Drop` so the close runs under
+  `PDFIUM_LOCK` (it's a pdfium call); always take `PDFIUM_LOCK` *before* the
+  per-doc mutex to keep a single lock order.
 - Pages are cheap and short-lived: **don't** store `PdfPage` in a resource. Fetch
   the page inside each NIF call from the stored document, render, return data,
   drop. (Mirrors ex_bashkit's "consumes self → `Mutex<Option<T>>`" discipline:

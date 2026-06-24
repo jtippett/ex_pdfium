@@ -7,9 +7,10 @@ Chromium PDF engine — via the Rust
 
 No Rust toolchain. No separately-installed pdfium. Add the dep and go.
 
-> **Status: scaffold.** Nothing is implemented yet. This repo is set up to be
-> built out by following [`PORTING.md`](PORTING.md). The sections below describe
-> the *target* API.
+> **Status: early.** Opening documents and reading page counts work today
+> (precompiled, `v0.1`+). Rendering, text extraction, metadata, and structure are
+> landing phase by phase — see [`PORTING.md`](PORTING.md). Examples below for
+> unimplemented phases are marked *(upcoming)*.
 
 ## Why
 
@@ -31,12 +32,25 @@ def deps do
 end
 ```
 
-## Usage (target API)
+## Usage
 
 ```elixir
 {:ok, doc} = ExPdfium.open("file.pdf")          # or open(<<"%PDF...">> = bytes)
 {:ok, n}   = ExPdfium.page_count(doc)
+:ok        = ExPdfium.close(doc)
 
+# Encrypted documents:
+{:ok, doc} = ExPdfium.open("secret.pdf", password: "hunter2")
+```
+
+Documents are closed automatically on garbage collection; call
+`ExPdfium.close/1` to release pdfium memory early. `open/2` returns
+`{:error, reason}` for problems like `:enoent`, `:invalid_pdf`, or
+`:password_error`.
+
+### Rendering *(upcoming)*
+
+```elixir
 {:ok, %ExPdfium.Bitmap{data: data, width: w, height: h}} =
   ExPdfium.render_page(doc, 0, dpi: 300)
 
@@ -44,9 +58,6 @@ end
 {:ok, image} = Vix.Vips.Image.new_from_binary(data, w, h, 4, :VIPS_FORMAT_UCHAR)
 Image.write(image, "page.png")
 ```
-
-Documents are closed automatically on garbage collection; call
-`ExPdfium.close/1` to release pdfium memory early.
 
 ## Development
 

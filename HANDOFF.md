@@ -71,13 +71,36 @@ separately-installed pdfium**, dev libpdfium hidden.
   now handed to the NIF via `ExPdfium.Native.set_dynamic_lib_dir/1` (a function
   argument), with an OS-level `PDFIUM_DYNAMIC_LIB_PATH` fallback.
 
-### Carry into Phase 1 (from the Phase 0 code review)
-- **Never panic inside a pdfium call.** `thread_safe`/`sync` route every FFI call
-  through a process-global `Mutex` (`PdfiumThreadMarshall`) that pdfium-render
-  `.unwrap()`s. A panic *inside* a marshalled call poisons that mutex and wedges
-  ALL subsequent pdfium calls process-wide. Phase 0's `.expect()`s are safe only
-  because they run in `OnceLock::get_or_init`, before any marshalled call. Phase 1
-  rule: map `PdfiumError` → `{:error, _}`; do not panic inside a pdfium call.
+### Phase 1 done — open + page_count + close (committed)
+`ExPdfium.open/1,2` (path/binary + `:password`), `page_count/1`, `close/1`.
+Document stored as `ResourceArc<Mutex<Option<PdfDocument<'static>>>>`; GC + `close`
+both drop it (closes in pdfium) under the global lock. Errors mapped from
+`PdfiumError` to atoms. 13 tests incl. concurrency + GC; full gate green.
+
+**The big Phase 1 finding — pdfium-render's `thread_safe` does NOT serialize
+calls.** It only locks across library Init/Destroy; data calls run unlocked. Our
+many-threaded dirty NIFs were hitting pdfium concurrently → intermittent
+`:invalid_pdf`/corruption (a fan-out concurrency test caught it). Fix: a
+`static PDFIUM_LOCK: Mutex<()>` that **we** take around every pdfium operation
+(open/count/close/drop). `sync` is kept only for its `Send + Sync` markers; that
+`unsafe` is sound *because* `PDFIUM_LOCK` makes access single-threaded. Lock order
+is always `PDFIUM_LOCK` → per-doc mutex. PORTING §2b/§2c corrected. (pdfium work
+is now fully serialized process-wide — inherent to pdfium.)
+
+- **Never panic inside a pdfium call** (still true, now about `PDFIUM_LOCK`): a
+  panic while holding it poisons it. We recover from poison (`pdfium_lock()` uses
+  `into_inner()`, since the lock guards only `()`), but no-panic is the discipline:
+  `#![deny(clippy::unwrap_used, clippy::expect_used)]` on the crate (one allowed
+  `expect` at init). Map `PdfiumError` → `{:error, atom}`; never unwrap.
+
+### Carry into Phase 2 (render)
+- **Scheduler stall risk.** `DocumentResource::Drop` blocks on `PDFIUM_LOCK` and
+  runs during a process's GC on a *normal* scheduler. With only load/page_count
+  under the lock (sub-ms) this is fine. Once `render_page` (CPU-heavy, can hold
+  the lock for hundreds of ms) lands, a GC-time close can block past the ~1ms
+  budget → "long_schedule" warnings / stalls. Fix when rendering lands: defer the
+  close (a dedicated cleanup thread, or release off the scheduler) rather than
+  blocking the destructor.
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
   `.set()`s a `OnceLock` and never checks `PDFIUM`. Fine for test_helper (runs
   first), but when it grows a real return, consider checking `PDFIUM.get().is_some()`

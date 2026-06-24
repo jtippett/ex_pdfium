@@ -5,15 +5,22 @@ defmodule ExPdfium do
   crate. The native library ships **precompiled** (`rustler_precompiled`), so
   there is no Rust toolchain or separately-installed pdfium to set up.
 
-  > #### Scaffold {: .warning}
-  > This module is a skeleton. The functions delegate to NIFs that are not
-  > implemented yet — see `PORTING.md` for the staged plan. Phase 0 (prove the
-  > static-link + precompiled-release path) comes first.
+  > #### Work in progress {: .info}
+  > Opening documents and reading page counts work today. Rendering, text
+  > extraction, metadata, and structure are landing phase by phase — see
+  > `PORTING.md`. Functions for unimplemented phases raise until then.
 
-  ## Example (target API)
+  ## Example
 
       {:ok, doc} = ExPdfium.open("file.pdf")
       {:ok, 3} = ExPdfium.page_count(doc)
+      :ok = ExPdfium.close(doc)
+
+      # Encrypted documents:
+      {:ok, doc} = ExPdfium.open("secret.pdf", password: "hunter2")
+
+  Rendering (upcoming) will hand a raw bitmap to `Vix`/`Image`:
+
       {:ok, %ExPdfium.Bitmap{data: data, width: w, height: h}} =
         ExPdfium.render_page(doc, 0, dpi: 300)
       {:ok, image} = Vix.Vips.Image.new_from_binary(data, w, h, 4, :VIPS_FORMAT_UCHAR)
@@ -34,10 +41,24 @@ defmodule ExPdfium do
   @doc """
   Open a PDF from a file path or an in-memory binary.
 
-  Options:
-    * `:password` — for encrypted PDFs (default `nil`)
+  A binary beginning with `"%PDF"` is treated as document bytes; any other binary
+  is treated as a file path. (A few PDFs carry junk bytes before the header; pass
+  those as an explicit path, or strip the leading bytes.)
+
+  ## Options
+    * `:password` — password for an encrypted PDF (default `nil`)
+
+  ## Errors
+  Returns `{:error, reason}` where `reason` is one of:
+    * `:enoent` — the path does not exist
+    * `:invalid_pdf` — the bytes are not a parseable PDF
+    * `:password_error` — the document is encrypted and the password was missing
+      or incorrect
+    * `:unsupported_security` — unsupported encryption/security handler
+    * `:file_error` / `:io_error` / `:open_failed` — other read/open failures
+    * `:bad_source` — internal: malformed source argument (e.g. a non-UTF-8 path)
   """
-  @spec open(Path.t() | binary(), keyword()) :: {:ok, Document.t()} | {:error, term()}
+  @spec open(Path.t() | binary(), keyword()) :: {:ok, Document.t()} | {:error, atom()}
   def open(path_or_binary, opts \\ [])
 
   def open(<<"%PDF", _rest::binary>> = bytes, opts),
@@ -53,8 +74,14 @@ defmodule ExPdfium do
     end
   end
 
-  @doc "Number of pages in the document."
-  @spec page_count(Document.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  @doc """
+  Number of pages in the document.
+
+  Returns `{:error, :document_closed}` if the document has been closed with
+  `close/1`.
+  """
+  @spec page_count(Document.t()) ::
+          {:ok, non_neg_integer()} | {:error, :document_closed | :lock_poisoned}
   def page_count(%Document{ref: ref}), do: Native.document_page_count(ref)
 
   @doc """

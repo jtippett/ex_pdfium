@@ -7,6 +7,19 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Added
+- Phase 1 — open documents & page count:
+  - `ExPdfium.open/1,2` opens a PDF from a file path or in-memory binary, with an
+    optional `:password` for encrypted documents. Returns `{:ok, %ExPdfium.Document{}}`.
+  - `ExPdfium.page_count/1` returns `{:ok, n}`.
+  - `ExPdfium.close/1` releases the document early (idempotent); documents are
+    also closed automatically on garbage collection (no manual-close leak).
+  - Errors are mapped from pdfium: `:enoent`, `:invalid_pdf`, `:password_error`,
+    `:unsupported_security`, `:file_error`, `:io_error`, `:document_closed`.
+  - pdfium is not thread-safe, so all pdfium operations are serialized through a
+    single global lock; calls are safe from any number of BEAM processes but run
+    one at a time.
+
 ## [0.1.0] - 2026-06-24
 
 First release — Phase 0: proves the toolchain and the precompiled-release path
