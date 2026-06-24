@@ -6,6 +6,8 @@ defmodule ExPdfiumTest do
   @encrypted Path.join(@fixtures, "encrypted.pdf")
   @color Path.join(@fixtures, "color.pdf")
   @text Path.join(@fixtures, "text.pdf")
+  @meta Path.join(@fixtures, "meta.pdf")
+  @restricted Path.join(@fixtures, "restricted.pdf")
 
   describe "Phase 0: the NIF loads and pdfium initializes" do
     test "pdfium_version/0 returns a string" do
@@ -384,6 +386,115 @@ defmodule ExPdfiumTest do
             {:ok, t} = ExPdfium.extract_text(doc, 0)
             {:ok, m} = ExPdfium.search_text(doc, 0, "pdfium")
             t =~ "pdfium" and length(m) == 1
+          end,
+          max_concurrency: 32,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
+    end
+  end
+
+  describe "Phase 4: metadata" do
+    test "metadata/1 returns the document info dictionary" do
+      {:ok, doc} = ExPdfium.open(@meta)
+      assert {:ok, meta} = ExPdfium.metadata(doc)
+      assert meta.title == "The Great Test"
+      assert meta.author == "Ada Lovelace"
+      assert meta.subject == "Unit Testing"
+      assert meta.keywords == "pdf, test, meta"
+      assert meta.creator == "ExPdfium Suite"
+      assert meta.producer == "Hand Rolled"
+      # creation_date is a raw PDF date string (D:YYYYMMDD...). modification_date
+      # relies on pdfium-render's "ModificationDate" tag, which doesn't match the
+      # standard /ModDate key, so it stays nil here — see the moduledoc.
+      assert meta.creation_date =~ "2024"
+      assert meta.modification_date == nil
+    end
+
+    test "a document with no info dict yields all-nil fields" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, meta} = ExPdfium.metadata(doc)
+      assert meta.title == nil
+      assert meta.author == nil
+    end
+
+    test "metadata on a closed document" do
+      {:ok, doc} = ExPdfium.open(@meta)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.metadata(doc)
+    end
+  end
+
+  describe "Phase 4: page geometry" do
+    test "page_info/2 returns size, rotation, label and boxes" do
+      {:ok, doc} = ExPdfium.open(@meta)
+      assert {:ok, info} = ExPdfium.page_info(doc, 0)
+      assert info.width == 200.0
+      assert info.height == 300.0
+      assert info.rotation == 0
+      assert info.label == nil
+      assert info.boxes.media == %{left: 0.0, bottom: 0.0, right: 200.0, top: 300.0}
+      # meta.pdf defines only a MediaBox; pdfium returns no fallback for the rest
+      # (not even crop -> media).
+      assert info.boxes.crop == nil
+      assert info.boxes.bleed == nil
+      assert info.boxes.trim == nil
+      assert info.boxes.art == nil
+    end
+
+    test "page_info error cases" do
+      {:ok, doc} = ExPdfium.open(@meta)
+      assert {:error, :page_out_of_bounds} = ExPdfium.page_info(doc, 99)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.page_info(doc, 0)
+    end
+  end
+
+  describe "Phase 4: permissions" do
+    test "an unencrypted document permits everything" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, perms} = ExPdfium.permissions(doc)
+      assert perms.print_high_quality == true
+      assert perms.extract_text_and_graphics == true
+      assert perms.modify_content == true
+    end
+
+    test "a restricted (AES-128) document reports its limits" do
+      {:ok, doc} = ExPdfium.open(@restricted)
+      assert {:ok, perms} = ExPdfium.permissions(doc)
+      # restricted.pdf: AES-128, --print=none --modify=none (copy still allowed).
+      assert perms.print_high_quality == false
+      assert perms.modify_content == false
+      assert perms.annotate == false
+      assert perms.extract_text_and_graphics == true
+    end
+
+    test "an unreadable security handler (AES-256) errors rather than reporting all-false" do
+      {:ok, doc} = ExPdfium.open(@encrypted, password: "secret")
+      assert {:error, :unsupported_security} = ExPdfium.permissions(doc)
+    end
+
+    test "permissions on a closed document" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.permissions(doc)
+    end
+  end
+
+  describe "Phase 4: concurrency" do
+    test "metadata/page_info/permissions are safe under concurrency" do
+      {:ok, doc} = ExPdfium.open(@meta)
+
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn _ ->
+            {:ok, m} = ExPdfium.metadata(doc)
+            {:ok, i} = ExPdfium.page_info(doc, 0)
+            {:ok, p} = ExPdfium.permissions(doc)
+            m.title == "The Great Test" and i.width == 200.0 and p.print_high_quality == true
           end,
           max_concurrency: 32,
           ordered: false

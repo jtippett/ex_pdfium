@@ -8,6 +8,13 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- Phase 4 — metadata, page geometry & permissions:
+  - `ExPdfium.metadata/1` → document info map (title/author/subject/keywords/
+    creator/producer/creation_date; `modification_date` is usually `nil`, a
+    pdfium-render limitation — see the docs).
+  - `ExPdfium.page_info/2` → `%{width, height, rotation, label, boxes}` (size in
+    points, rotation in degrees, boundary boxes media/crop/bleed/trim/art).
+  - `ExPdfium.permissions/1` → map of 8 boolean permission flags.
 - Phase 3 — text extraction & search:
   - `ExPdfium.extract_text/2` (one page) and `extract_text/1` (whole document,
     pages joined by a form feed).

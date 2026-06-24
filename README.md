@@ -7,9 +7,10 @@ Chromium PDF engine — via the Rust
 
 No Rust toolchain. No separately-installed pdfium. Add the dep and go.
 
-> **Status: early.** Opening documents, page counts, rendering, and text
-> extraction/search work today (precompiled, `v0.1`+). Metadata and structure are
-> landing phase by phase — see [`PORTING.md`](PORTING.md).
+> **Status: early.** Opening documents, page counts, rendering, text
+> extraction/search, metadata, page geometry, and permissions work today
+> (precompiled, `v0.1`+). Structure (bookmarks/links/attachments) and read forms
+> are landing phase by phase — see [`PORTING.md`](PORTING.md).
 
 ## Why
 
@@ -75,6 +76,21 @@ uncompressed 4-channel buffer (`width * height * 4` bytes).
 # Search a page (case-insensitive by default):
 {:ok, matches} = ExPdfium.search_text(doc, 0, "invoice", match_case: false)
 # => [%{text: "Invoice", rects: [%{left: ..., bottom: ..., right: ..., top: ...}]}, ...]
+```
+
+### Metadata, geometry & permissions
+
+```elixir
+{:ok, meta} = ExPdfium.metadata(doc)
+# => %{title: "…", author: "…", creation_date: "D:…", producer: "…", ...}
+
+{:ok, info} = ExPdfium.page_info(doc, 0)
+# => %{width: 612.0, height: 792.0, rotation: 0, label: nil,
+#      boxes: %{media: %{left: 0.0, bottom: 0.0, right: 612.0, top: 792.0},
+#               crop: nil, bleed: nil, trim: nil, art: nil}}  # non-media boxes often nil
+
+{:ok, perms} = ExPdfium.permissions(doc)
+# => %{print_high_quality: true, extract_text_and_graphics: true, modify_content: true, ...}
 ```
 
 ## Development

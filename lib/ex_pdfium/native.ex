@@ -59,4 +59,9 @@ defmodule ExPdfium.Native do
   # `query` is binary; `match_case`/`whole_word` are booleans.
   def document_search_text(_doc, _page_index, _query, _match_case, _whole_word),
     do: :erlang.nif_error(:nif_not_loaded)
+
+  # Phase 4 — metadata, geometry & permissions.
+  def document_metadata(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_page_info(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+  def document_permissions(_doc), do: :erlang.nif_error(:nif_not_loaded)
 end

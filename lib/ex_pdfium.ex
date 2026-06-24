@@ -6,8 +6,9 @@ defmodule ExPdfium do
   there is no Rust toolchain or separately-installed pdfium to set up.
 
   > #### Work in progress {: .info}
-  > Opening documents, page counts, rendering, and text extraction/search work
-  > today. Metadata and structure are landing phase by phase — see `PORTING.md`.
+  > Opening documents, page counts, rendering, text extraction/search, metadata,
+  > page geometry, and permissions work today. Structure (bookmarks/links/
+  > attachments) and read forms are landing phase by phase — see `PORTING.md`.
   > Functions for unimplemented phases raise until then.
 
   ## Example
@@ -204,6 +205,93 @@ defmodule ExPdfium do
     end
   end
 
+  @metadata_keys ~w(title author subject keywords creator producer creation_date
+                    modification_date)a
+
+  @doc """
+  Return the document's info-dictionary metadata as a map.
+
+  Every key is present; absent fields are `nil`. Date fields (`:creation_date`,
+  `:modification_date`) are raw PDF date strings (e.g. `"D:20240115120000Z"`).
+
+  > #### `:modification_date` caveat {: .warning}
+  > pdfium-render reads this from a `"ModificationDate"` tag rather than the
+  > PDF-standard `/ModDate` key, so it is `nil` for most real-world documents.
+
+      %{title: "…", author: "…", subject: nil, keywords: nil, creator: "…",
+        producer: "…", creation_date: "D:…", modification_date: nil}
+  """
+  @spec metadata(Document.t()) :: {:ok, %{atom() => String.t() | nil}} | {:error, atom()}
+  def metadata(%Document{ref: ref}) do
+    case Native.document_metadata(ref) do
+      {:ok, pairs} ->
+        base = Map.new(@metadata_keys, &{&1, nil})
+        {:ok, Enum.into(pairs, base)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Geometry of a 0-indexed page: size (points), rotation (degrees), label, and the
+  boundary boxes.
+
+      %{
+        width: 612.0, height: 792.0,
+        rotation: 0,           # 0 | 90 | 180 | 270
+        label: nil,            # page label string, if any
+        boxes: %{media: %{left: 0.0, bottom: 0.0, right: 612.0, top: 792.0},
+                 crop: nil, bleed: nil, trim: nil, art: nil}
+      }
+
+  Each boundary box is a `t:bounds/0` (PDF points) or `nil` when not defined.
+  Most documents define only a media box, so `crop`/`bleed`/`trim`/`art` are
+  commonly `nil` (pdfium does not fall back to the media box).
+  """
+  @spec page_info(Document.t(), non_neg_integer()) :: {:ok, map()} | {:error, atom()}
+  def page_info(%Document{ref: ref}, page_index) do
+    case Native.document_page_info(ref, page_index) do
+      {:ok, {width, height, rotation, label, {media, crop, bleed, trim, art}}} ->
+        {:ok,
+         %{
+           width: width,
+           height: height,
+           rotation: rotation,
+           label: label,
+           boxes: %{
+             media: opt_rect(media),
+             crop: opt_rect(crop),
+             bleed: opt_rect(bleed),
+             trim: opt_rect(trim),
+             art: opt_rect(art)
+           }
+         }}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Return the document's permission flags as a map of booleans.
+
+  Keys: `:print_high_quality`, `:print_low_quality`, `:assemble`,
+  `:modify_content`, `:extract_text_and_graphics`, `:fill_form_fields`,
+  `:create_form_fields`, `:annotate`. An unencrypted document permits everything.
+
+  Returns `{:error, :unsupported_security}` for documents whose security handler
+  pdfium can't interpret (e.g. AES-256 / PDF 2.0 encryption) — rather than
+  reporting a misleading all-`false` set.
+  """
+  @spec permissions(Document.t()) :: {:ok, %{atom() => boolean()}} | {:error, atom()}
+  def permissions(%Document{ref: ref}) do
+    case Native.document_permissions(ref) do
+      {:ok, pairs} -> {:ok, Map.new(pairs)}
+      {:error, _} = err -> err
+    end
+  end
+
   @doc """
   Explicitly close a document, releasing pdfium memory early. Optional and
   idempotent.
@@ -218,4 +306,7 @@ defmodule ExPdfium do
 
   defp rect_to_map({left, bottom, right, top}),
     do: %{left: left, bottom: bottom, right: right, top: top}
+
+  defp opt_rect(nil), do: nil
+  defp opt_rect(rect), do: rect_to_map(rect)
 end

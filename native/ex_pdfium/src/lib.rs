@@ -67,6 +67,24 @@ mod atoms {
         text_failed,
         empty_query,
         search_failed,
+        // metadata keys
+        title,
+        author,
+        subject,
+        keywords,
+        creator,
+        producer,
+        creation_date,
+        modification_date,
+        // permission keys
+        print_high_quality,
+        print_low_quality,
+        assemble,
+        modify_content,
+        extract_text_and_graphics,
+        fill_form_fields,
+        create_form_fields,
+        annotate,
     }
 }
 
@@ -715,6 +733,141 @@ fn document_search_text(
             })
             .collect();
         Ok(matches)
+    })
+}
+
+// ── Metadata, geometry & permissions ─────────────────────────────────────────
+
+/// Phase 4: document info dictionary. Returns only the tags that are present, as
+/// `(key, value)` pairs; the Elixir side fills absent keys with nil.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_metadata(doc: ResourceArc<DocumentResource>) -> Result<Vec<(Atom, String)>, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let md = document.metadata();
+
+        let mut pairs = Vec::new();
+        for (key, tag) in [
+            (atoms::title(), PdfDocumentMetadataTagType::Title),
+            (atoms::author(), PdfDocumentMetadataTagType::Author),
+            (atoms::subject(), PdfDocumentMetadataTagType::Subject),
+            (atoms::keywords(), PdfDocumentMetadataTagType::Keywords),
+            (atoms::creator(), PdfDocumentMetadataTagType::Creator),
+            (atoms::producer(), PdfDocumentMetadataTagType::Producer),
+            (
+                atoms::creation_date(),
+                PdfDocumentMetadataTagType::CreationDate,
+            ),
+            (
+                atoms::modification_date(),
+                PdfDocumentMetadataTagType::ModificationDate,
+            ),
+        ] {
+            if let Some(t) = md.get(tag) {
+                pairs.push((key, t.value().to_string()));
+            }
+        }
+        Ok(pairs)
+    })
+}
+
+// (media, crop, bleed, trim, art) — each nil if the box is undefined.
+type PageBoxes = (
+    Option<Rect>,
+    Option<Rect>,
+    Option<Rect>,
+    Option<Rect>,
+    Option<Rect>,
+);
+
+/// Phase 4: page size (points), rotation (degrees), label, and boundary boxes.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_page_info(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<(f64, f64, i64, Option<String>, PageBoxes), Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+
+        let width = page.width().value as f64;
+        let height = page.height().value as f64;
+        let rotation = match page.rotation() {
+            Ok(PdfPageRenderRotation::Degrees90) => 90,
+            Ok(PdfPageRenderRotation::Degrees180) => 180,
+            Ok(PdfPageRenderRotation::Degrees270) => 270,
+            _ => 0,
+        };
+        let label = page.label().map(|s| s.to_string());
+
+        let b = page.boundaries();
+        let boxes = (
+            b.media().ok().map(|x| rect_of(&x.bounds)),
+            b.crop().ok().map(|x| rect_of(&x.bounds)),
+            b.bleed().ok().map(|x| rect_of(&x.bounds)),
+            b.trim().ok().map(|x| rect_of(&x.bounds)),
+            b.art().ok().map(|x| rect_of(&x.bounds)),
+        );
+
+        Ok((width, height, rotation, label, boxes))
+    })
+}
+
+/// Phase 4: document permissions, as `(key, bool)` pairs. An undeterminable
+/// permission (unknown security handler) is reported as `false`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_permissions(doc: ResourceArc<DocumentResource>) -> Result<Vec<(Atom, bool)>, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let p = document.permissions();
+
+        // pdfium-render can only read permissions for security-handler revisions
+        // 2-4; revision 5/6 (AES-256 / PDF 2.0) makes every `can_*` return Err.
+        // Probe once and surface that rather than reporting a misleading all-false
+        // set from a security-relevant API. (All `can_*` share this check, so on
+        // success the `unwrap_or(false)` below can't actually error.)
+        let print_high_quality = p
+            .can_print_high_quality()
+            .map_err(|_| atoms::unsupported_security())?;
+        Ok(vec![
+            (atoms::print_high_quality(), print_high_quality),
+            (
+                atoms::print_low_quality(),
+                p.can_print_only_low_quality().unwrap_or(false),
+            ),
+            (
+                atoms::assemble(),
+                p.can_assemble_document().unwrap_or(false),
+            ),
+            (
+                atoms::modify_content(),
+                p.can_modify_document_content().unwrap_or(false),
+            ),
+            (
+                atoms::extract_text_and_graphics(),
+                p.can_extract_text_and_graphics().unwrap_or(false),
+            ),
+            (
+                atoms::fill_form_fields(),
+                p.can_fill_existing_interactive_form_fields()
+                    .unwrap_or(false),
+            ),
+            (
+                atoms::create_form_fields(),
+                p.can_create_new_interactive_form_fields().unwrap_or(false),
+            ),
+            (
+                atoms::annotate(),
+                p.can_add_or_modify_text_annotations().unwrap_or(false),
+            ),
+        ])
     })
 }
 
