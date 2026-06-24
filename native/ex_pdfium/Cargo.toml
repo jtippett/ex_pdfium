@@ -12,18 +12,26 @@ crate-type = ["cdylib"]
 
 [features]
 # DEV/TEST default: dynamic binding. pdfium-render compiles with NO pdfium
-# present and loads libpdfium at runtime (Pdfium::bind_to_library). `thread_safe`
-# wraps every pdfium call in a mutex — required because the BEAM calls dirty NIFs
-# from a pool of OS threads and pdfium is NOT thread-safe.
-default = ["thread_safe"]
-thread_safe = ["pdfium-render/thread_safe"]
+# present and loads libpdfium at runtime (Pdfium::bind_to_library).
+#
+# `sync` is load-bearing and must always be on: the BEAM calls dirty NIFs from a
+# pool of OS threads and pdfium is NOT thread-safe, so we keep ONE global Pdfium
+# in a `static`. pdfium-render's `sync` feature both (a) wraps every pdfium call
+# in a mutex (it implies the upstream `thread_safe` feature) AND (b) adds the
+# `unsafe impl Send + Sync for Pdfium` that lets that single instance be shared
+# across threads from a `static`. NOTE (verified against 0.8.37): `thread_safe`
+# ALONE only does (a) — Pdfium stays `!Send`/`!Sync` and won't compile in a
+# `static`. We need (b) too, so depend on `sync`, not `thread_safe`.
+default = ["sync"]
+sync = ["pdfium-render/sync"]
 
 # SHIPPING: release.yml turns these on per target to produce a single
 # self-contained NIF (libpdfium.a linked in). `static` needs PDFIUM_STATIC_LIB_PATH
 # at build time. The C++ stdlib differs by target — pick exactly one:
 #   linux-gnu/musl -> libstdcpp ; apple-darwin -> libcpp
-# NOTE: verify these feature names against the pinned pdfium-render version
-# (docs.rs / `cargo add pdfium-render`); they are the documented names as of writing.
+# Verified against pdfium-render 0.8.37 (crates.io feature list): the upstream
+# features are `static`, `libstdc++`, `libc++`; note `libc++`/`libstdc++` each
+# already imply `static`, so release.yml passing `static,<cxx>` is belt-and-braces.
 static = ["pdfium-render/static"]
 libstdcpp = ["pdfium-render/libstdc++"]
 libcpp = ["pdfium-render/libc++"]
@@ -31,7 +39,16 @@ libcpp = ["pdfium-render/libc++"]
 [dependencies]
 rustler = "0.38"
 
-# pdfium-render is published to crates.io, so pin an exact semver.
-# FIRST TASK (Phase 0): `cargo add pdfium-render` to resolve the real latest,
-# then pin it exactly here. `"0.8"` is a placeholder caret.
-pdfium-render = { version = "0.8", default-features = false }
+# pdfium-render is published to crates.io; pin it exactly (bump via UPDATE_PROCEDURE).
+# 0.8.37 is the latest 0.8.x (`cargo add` resolved it); 0.9.x exists but reworks the
+# binding API — bump deliberately, not incidentally.
+#
+# `default-features = false` drops the crate's heavy `image` default (the `image`
+# crate + its deps), which we don't need yet. But the default ALSO carries a
+# mandatory pdfium API-version feature (`pdfium_latest` -> `pdfium_7543`): without
+# one selected, pdfium-render has no FFI surface to bind. So re-add it here as a
+# non-optional dependency feature — it must be on for BOTH the dynamic dev build
+# and release.yml's `--no-default-features` static build, neither of which would
+# otherwise enable it. Keep the linked pdfium binary (PDFIUM_TAG) at chromium/7543
+# to match this API version.
+pdfium-render = { version = "=0.8.37", default-features = false, features = ["pdfium_latest"] }

@@ -1,28 +1,37 @@
 //! ExPdfium NIF — a thin, faithful bridge to pdfium via `pdfium-render`.
 //!
-//! SCAFFOLD. This encodes the load-bearing decisions from PORTING.md §2; the
-//! bodies are sketches to be filled in per phase. It will not compile until
-//! `cargo add pdfium-render` brings the crate and the APIs are matched against
-//! the pinned version's docs.
+//! Phase 0 wires up the global pdfium instance and a single load-proof NIF
+//! (`pdfium_version`). Document/page NIFs land in later phases (see PORTING.md).
+//! This encodes the load-bearing decisions from PORTING.md §2.
 //!
 //! Three rules drive everything here:
 //!   1. pdfium is NOT thread-safe and the BEAM calls dirty NIFs from many OS
-//!      threads -> one global, `thread_safe`-feature Pdfium instance.
+//!      threads -> one global Pdfium instance. The `sync` feature serializes
+//!      every call (a mutex) AND makes Pdfium Send+Sync so it can live here in a
+//!      `static` (plain `thread_safe` does the former but not the latter).
 //!   2. `PdfDocument<'a>` borrows from `Pdfium`. A `'static` Pdfium (OnceLock)
 //!      makes `PdfDocument<'static>` storable in a ResourceArc.
 //!   3. pdfium work is synchronous and CPU-heavy -> every NIF is DirtyCpu.
 //!      (No tokio — unlike ex_bashkit.)
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use pdfium_render::prelude::*;
-use rustler::{Error, NifResult, ResourceArc};
 
 // ── The single global pdfium instance ───────────────────────────────────────
 //
 // `'static` so documents can borrow it and live in resources. Initialized once;
 // every NIF goes through `pdfium()`.
 static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
+
+// Dev/test only: the directory holding a dynamic libpdfium, supplied from Elixir
+// via `set_dynamic_lib_dir/1` before the first pdfium call. We CANNOT read this
+// from an env var set with `System.put_env`: that updates Erlang's internal env
+// table but not the C `getenv` a NIF sees, so a function argument is the only
+// reliable Elixir->NIF channel. (An OS-level PDFIUM_DYNAMIC_LIB_PATH, set before
+// the BEAM boots, still works and is honored as a fallback.)
+#[cfg(not(feature = "static"))]
+static DYNAMIC_LIB_DIR: OnceLock<String> = OnceLock::new();
 
 fn pdfium() -> &'static Pdfium {
     PDFIUM.get_or_init(|| {
@@ -31,16 +40,23 @@ fn pdfium() -> &'static Pdfium {
         let bindings = Pdfium::bind_to_statically_linked_library()
             .expect("statically linked pdfium failed to bind");
 
-        // Dev/test build: load a dynamic libpdfium. Prefer an explicit path
-        // (set in test_helper / the dev download script), fall back to the
-        // system library.
+        // Dev/test build: load a dynamic libpdfium from the dir Elixir handed us
+        // (or an OS-level PDFIUM_DYNAMIC_LIB_PATH), else the system library.
         #[cfg(not(feature = "static"))]
-        let bindings = match std::env::var("PDFIUM_DYNAMIC_LIB_PATH") {
-            Ok(dir) => Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir))
-                .or_else(|_| Pdfium::bind_to_system_library())
-                .expect("could not load a dynamic libpdfium (set PDFIUM_DYNAMIC_LIB_PATH)"),
-            Err(_) => {
-                Pdfium::bind_to_system_library().expect("no libpdfium found (set PDFIUM_DYNAMIC_LIB_PATH)")
+        let bindings = {
+            let dir = DYNAMIC_LIB_DIR
+                .get()
+                .cloned()
+                .or_else(|| std::env::var("PDFIUM_DYNAMIC_LIB_PATH").ok());
+            match dir {
+                Some(dir) => {
+                    Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir))
+                        .or_else(|_| Pdfium::bind_to_system_library())
+                        .expect("could not load libpdfium from the dir given to set_dynamic_lib_dir/1")
+                }
+                None => Pdfium::bind_to_system_library().expect(
+                    "no libpdfium found (call ExPdfium.Native.set_dynamic_lib_dir/1 or install pdfium)",
+                ),
             }
         };
 
@@ -48,66 +64,36 @@ fn pdfium() -> &'static Pdfium {
     })
 }
 
-// ── Document resource ───────────────────────────────────────────────────────
-//
-// `Mutex<Option<…>>`: the Option lets `document_close` release early (take it);
-// the Mutex serializes multi-step ops on one document (belt-and-suspenders over
-// the `thread_safe` feature). Drop closes the document — no manual-close leak.
-struct DocumentResource {
-    doc: Mutex<Option<PdfDocument<'static>>>,
-}
-
-#[rustler::resource_impl]
-impl rustler::Resource for DocumentResource {}
-
 // ── NIFs ─────────────────────────────────────────────────────────────────────
 
 /// Phase 0: prove pdfium links & initializes.
+///
+/// Touching `pdfium()` binds the library (eagerly resolving every FPDF symbol)
+/// and runs `FPDF_InitLibrary` once — so returning at all means pdfium loaded.
+/// pdfium exposes no build-version string through its public C API, so we return
+/// a stable load-confirmation marker rather than inventing one.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn pdfium_version() -> String {
-    // Placeholder — pdfium-render exposes a version/bindings handle; return
-    // something that only succeeds if the library actually loaded.
     let _ = pdfium();
     "pdfium loaded".to_string()
 }
 
-/// Phase 1: open from {:path, p} | {:binary, bytes}, optional password.
-#[rustler::nif(schedule = "DirtyCpu")]
-fn document_open(
-    _source: rustler::Term,
-    _password: Option<String>,
-) -> NifResult<ResourceArc<DocumentResource>> {
-    // TODO(Phase 1): decode `source`, call pdfium().load_pdf_from_file /
-    // load_pdf_from_byte_slice (or _vec for an owned buffer), map PdfiumError.
-    let _ = pdfium();
-    Err(Error::Atom("not_implemented"))
-}
-
-/// Phase 1: explicit early close. Idempotent.
-#[rustler::nif(schedule = "DirtyCpu")]
-fn document_close(doc: ResourceArc<DocumentResource>) -> rustler::Atom {
-    let _ = doc.doc.lock().map(|mut g| g.take());
+/// Dev/test only: point the dynamic binding at a directory containing libpdfium,
+/// before the first pdfium call. No-op on the statically-linked (shipped) build,
+/// and a no-op if pdfium has already been initialized.
+#[rustler::nif]
+fn set_dynamic_lib_dir(dir: String) -> rustler::Atom {
+    #[cfg(not(feature = "static"))]
+    let _ = DYNAMIC_LIB_DIR.set(dir);
+    #[cfg(feature = "static")]
+    let _ = dir;
     rustler::types::atom::ok()
 }
 
-/// Phase 1: page count.
-#[rustler::nif(schedule = "DirtyCpu")]
-fn document_page_count(_doc: ResourceArc<DocumentResource>) -> NifResult<u16> {
-    // TODO(Phase 1): lock, ensure Some, doc.pages().len().
-    Err(Error::Atom("not_implemented"))
-}
-
-/// Phase 2: render a 0-indexed page -> (data, width, height, stride, format).
-#[rustler::nif(schedule = "DirtyCpu")]
-fn document_render_page(
-    _doc: ResourceArc<DocumentResource>,
-    _page_index: u16,
-    _opts: rustler::Term,
-) -> NifResult<(rustler::Binary<'static>, u32, u32, u32, rustler::Atom)> {
-    // TODO(Phase 2): lock; fetch page (don't store it); build a PdfRenderConfig
-    // from opts (dpi/scale/width/height); render to a bitmap; copy bytes into an
-    // OwnedBinary; return with width/height/stride and the format atom.
-    Err(Error::Atom("not_implemented"))
-}
+// Phase 1+ NIFs land in their own phases: document open/close/page_count, then
+// render_page. They hang a document off `ResourceArc<Mutex<Option<PdfDocument<
+// 'static>>>>` — see PORTING.md §2c for the resource-lifetime design (the `Sync`
+// bound on rustler resources is the crux there). Until then, the matching Elixir
+// stubs in lib/ex_pdfium/native.ex raise `:nif_not_loaded`.
 
 rustler::init!("Elixir.ExPdfium.Native");

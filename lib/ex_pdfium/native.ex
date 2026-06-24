@@ -35,6 +35,12 @@ defmodule ExPdfium.Native do
   # Phase 0 — proves pdfium links & initializes.
   def pdfium_version, do: :erlang.nif_error(:nif_not_loaded)
 
+  # Dev/test only — point the dynamic binding at a dir holding libpdfium before
+  # the first pdfium call. No-op on the shipped (statically-linked) build. Called
+  # from test/test_helper.exs; env vars can't carry this into a NIF (os:putenv
+  # doesn't reach a NIF's getenv).
+  def set_dynamic_lib_dir(_dir), do: :erlang.nif_error(:nif_not_loaded)
+
   # Phase 1 — open documents (path or binary) + page count.
   # `source` is {:path, path} | {:binary, bytes}; password is binary | nil.
   def document_open(_source, _password), do: :erlang.nif_error(:nif_not_loaded)

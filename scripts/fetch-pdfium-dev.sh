@@ -7,7 +7,7 @@
 # Keep the tag in sync with release.yml's PDFIUM_TAG and UPDATE_PROCEDURE.md.
 set -euo pipefail
 
-TAG="${1:-chromium/7506}"
+TAG="${1:-chromium/7543}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/priv/pdfium"
 
@@ -29,4 +29,4 @@ tar -xzf "$tmp/pdfium.tgz" -C "$tmp" "$lib"
 cp "$tmp/$lib" "$DEST/"
 rm -rf "$tmp"
 echo "Installed $(basename "$lib") -> $DEST/"
-echo "Tests pick it up via PDFIUM_DYNAMIC_LIB_PATH (see test/test_helper.exs)."
+echo "Tests pick it up via ExPdfium.Native.set_dynamic_lib_dir/1 (see test/test_helper.exs)."

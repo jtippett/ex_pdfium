@@ -13,11 +13,49 @@ dance). This handoff is uncommitted scratch — keep it refreshed as you go.
 
 ## TL;DR — where things stand
 
-**Scaffold stage. Nothing is implemented yet.** This folder is the runway: the
-plan, the release machinery, and skeleton stubs are in place so the port can be
-"kicked off" by working PORTING.md's phases in order. **Phase 0 (prove the
-static-link + precompiled-release path with a trivial NIF) has not been done —
-start there.**
+**Phase 0 dev path is proven; static-release path is the remaining Phase 0 work.**
+`ExPdfium.pdfium_version/0` is green: the NIF binds + initializes pdfium
+**dynamically** and `EXPDFIUM_BUILD=1 mix test` passes (1 passed, 2 skipped) on
+macOS arm64 / OTP 29, full gate clean (fmt, clippy `-D warnings`, warnings-as-
+errors compile). Phase 1/2 stubs are deferred to their phases (see below).
+
+**Still TODO in Phase 0 (needs a release, so gated on user go-ahead):** wire
+`release.yml`'s **static** build (download static libpdfium per target →
+`PDFIUM_STATIC_LIB_PATH=… cargo build --release --features sync,static,<cxx>`),
+tag `v0.1.0`, regen the checksum file, and prove a clean precompiled `mix
+deps.get` on this machine. **Do not tag/release without an explicit go-ahead.**
+
+### What Phase 0 (dev) settled — corrections to scaffold assumptions
+- **`pdfium-render` pinned `=0.8.37`** (latest 0.8.x). 0.9.x exists but reworks
+  the binding API — treat as a deliberate future bump (UPDATE_PROCEDURE Part A).
+- **Use the `sync` feature, NOT `thread_safe`.** Verified in 0.8.37 source: the
+  `unsafe impl Send + Sync for Pdfium` is gated on `sync`; `thread_safe` alone
+  only adds the per-call mutex and leaves `Pdfium` `!Send`/`!Sync`, which won't
+  compile in a `static`. `sync` implies `thread_safe`. (Cargo.toml + release.yml
+  updated.)
+- **pdfium binary pin bumped `chromium/7506` → `chromium/7543`** to match the API
+  version pdfium-render 0.8.37 binds (`pdfium_latest` == `pdfium_7543`). 7506 is
+  older than the bound API → unresolved symbols at dlopen. (4 files updated.)
+- **`default-features = false` drops a mandatory pdfium API-version feature.** The
+  crate's default carries `pdfium_latest`; without a `pdfium_XXXX` feature there's
+  no FFI surface. Re-added as a non-optional dependency feature so BOTH the dev
+  build and release.yml's `--no-default-features` static build get it.
+- **Env vars don't cross into a NIF.** `System.put_env` (os:putenv) updates
+  Erlang's env table but not the C `getenv` a NIF reads. The dev libpdfium dir is
+  now handed to the NIF via `ExPdfium.Native.set_dynamic_lib_dir/1` (a function
+  argument), with an OS-level `PDFIUM_DYNAMIC_LIB_PATH` fallback.
+
+### Carry into Phase 1 (from the Phase 0 code review)
+- **Never panic inside a pdfium call.** `thread_safe`/`sync` route every FFI call
+  through a process-global `Mutex` (`PdfiumThreadMarshall`) that pdfium-render
+  `.unwrap()`s. A panic *inside* a marshalled call poisons that mutex and wedges
+  ALL subsequent pdfium calls process-wide. Phase 0's `.expect()`s are safe only
+  because they run in `OnceLock::get_or_init`, before any marshalled call. Phase 1
+  rule: map `PdfiumError` → `{:error, _}`; do not panic inside a pdfium call.
+- **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
+  `.set()`s a `OnceLock` and never checks `PDFIUM`. Fine for test_helper (runs
+  first), but when it grows a real return, consider checking `PDFIUM.get().is_some()`
+  and returning e.g. `:already_initialized` so a mis-ordered caller can tell.
 
 The goal that kicked this off: be able to add the lib as a mix dependency and
 `mix deps.get` it on this machine (macOS arm64, **OTP 29**) with the NIF
@@ -121,6 +159,14 @@ Each phase also gets a README section, a CHANGELOG entry, and an `examples/*.exs
 ---
 
 ## Open questions for the user (raise when relevant)
+
+- **pdfium-render 0.8.37 vs 0.9.x:** pinned 0.8.37 for Phase 0 (latest 0.8, what
+  `cargo add` resolved, matches the scaffold's `=0.8.x` plan). 0.9.x reworks the
+  binding API; bump deliberately later if its features (e.g. newer pdfium
+  versions) are wanted.
+- **pdfium tag 7506 → 7543:** the docs said "carry 7506 forward," but 7543 is
+  required to match pdfium-render 0.8.37's bound API. Flagging the change; if you
+  specifically need 7506, we'd instead pin pdfium-render's `pdfium_7350` feature.
 
 - **Static artifact size:** a static pdfium baked per target is multi-MB ×
   N targets. Acceptable? (Alternative: a custom tarball bundling a dynamic

@@ -9,5 +9,16 @@ not pdfium-render's).
 
 ### Added
 - Initial scaffold: project structure, `rustler_precompiled` config, tag-driven
-  release pipeline, and the porting plan (`PORTING.md`). No functionality yet —
-  see Phase 0 in `PORTING.md`.
+  release pipeline, and the porting plan (`PORTING.md`).
+- Phase 0 (toolchain): `ExPdfium.pdfium_version/0`, a load-proof NIF that binds
+  and initializes pdfium. Pinned `pdfium-render = "=0.8.37"`. The dev/test build
+  binds pdfium dynamically; the libpdfium directory is passed to the NIF via
+  `ExPdfium.Native.set_dynamic_lib_dir/1` (env vars set with `System.put_env`
+  don't reach a NIF).
+
+### Changed
+- pdfium-render must be built with the `sync` feature (not just `thread_safe`):
+  only `sync` adds the `Send + Sync` impls that let the single global `Pdfium`
+  live in a `static`. `release.yml` updated accordingly.
+- Pinned pdfium binary tag bumped `chromium/7506` → `chromium/7543` to match the
+  pdfium API version pdfium-render 0.8.37 binds (`pdfium_latest`).

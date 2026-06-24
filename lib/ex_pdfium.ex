@@ -21,7 +21,13 @@ defmodule ExPdfium do
 
   alias ExPdfium.{Bitmap, Document, Native}
 
-  @doc "Return the underlying pdfium build/version string. Proves the NIF loaded."
+  @doc """
+  Return a marker string confirming the native pdfium library loaded and
+  initialized. Useful as a smoke test that the precompiled NIF is healthy.
+
+  pdfium exposes no build-version string through its public C API, so this is a
+  fixed confirmation marker rather than a version number.
+  """
   @spec pdfium_version() :: String.t()
   def pdfium_version, do: Native.pdfium_version()
 

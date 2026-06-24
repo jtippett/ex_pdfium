@@ -15,8 +15,9 @@ permissions:
   contents: write
 
 env:
-  # The pdfium binary release to link against. Bump via UPDATE_PROCEDURE.md.
-  PDFIUM_TAG: "chromium/7506"
+  # The pdfium binary release to link against. Must match pdfium-render's bound
+  # API (pdfium_latest == pdfium_7543 for the pinned 0.8.37). Bump via UPDATE_PROCEDURE.md.
+  PDFIUM_TAG: "chromium/7543"
 
 jobs:
   build:
@@ -81,7 +82,7 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }} \
             --no-default-features \
-            --features thread_safe,static,${{ matrix.cxx_feature }}
+            --features sync,static,${{ matrix.cxx_feature }}
 
       - name: Package NIF
         id: package

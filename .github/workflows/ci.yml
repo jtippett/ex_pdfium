@@ -14,8 +14,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Carry the pdfium binary pin forward from the old project. Bump via UPDATE_PROCEDURE.
-  PDFIUM_TAG: "chromium/7506"
+  # pdfium binary pin. Must match pdfium-render's bound API (pdfium_latest ==
+  # pdfium_7543 for the pinned 0.8.37). Bump via UPDATE_PROCEDURE.
+  PDFIUM_TAG: "chromium/7543"
 
 jobs:
   test:
