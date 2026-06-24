@@ -7,8 +7,8 @@ Chromium PDF engine — via the Rust
 
 No Rust toolchain. No separately-installed pdfium. Add the dep and go.
 
-> **Status: early.** Opening documents, page counts, and page rendering work
-> today (precompiled, `v0.1`+). Text extraction, metadata, and structure are
+> **Status: early.** Opening documents, page counts, rendering, and text
+> extraction/search work today (precompiled, `v0.1`+). Metadata and structure are
 > landing phase by phase — see [`PORTING.md`](PORTING.md).
 
 ## Why
@@ -61,6 +61,21 @@ Image.write(image, "page.png")
 `render_page/3` takes `:dpi` / `:scale` / `:width` / `:height` for sizing,
 `format: :rgba | :bgra`, and `background: :white | :transparent`. The bitmap is an
 uncompressed 4-channel buffer (`width * height * 4` bytes).
+
+### Text & search
+
+```elixir
+{:ok, text} = ExPdfium.extract_text(doc, 0)   # one page
+{:ok, text} = ExPdfium.extract_text(doc)      # whole document
+
+# Text runs with bounding boxes (PDF points, origin bottom-left):
+{:ok, segments} = ExPdfium.text_segments(doc, 0)
+# => [%{text: "Hello", bounds: %{left: 41.9, bottom: 115.2, right: 89.0, top: 137.5}}, ...]
+
+# Search a page (case-insensitive by default):
+{:ok, matches} = ExPdfium.search_text(doc, 0, "invoice", match_case: false)
+# => [%{text: "Invoice", rects: [%{left: ..., bottom: ..., right: ..., top: ...}]}, ...]
+```
 
 ## Development
 

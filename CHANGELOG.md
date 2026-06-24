@@ -8,6 +8,13 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- Phase 3 — text extraction & search:
+  - `ExPdfium.extract_text/2` (one page) and `extract_text/1` (whole document,
+    pages joined by a form feed).
+  - `ExPdfium.text_segments/2` returns text runs with per-segment bounding boxes
+    (PDF points, origin bottom-left).
+  - `ExPdfium.search_text/3,4` with `:match_case` and `:whole_word` options; each
+    match carries its text and bounding rects. Empty query → `{:error, :empty_query}`.
 - Phase 2 — render a page to a bitmap: `ExPdfium.render_page/3` returns
   `{:ok, %ExPdfium.Bitmap{data, width, height, stride, format}}`, an uncompressed
   4-channel buffer ready for `Vix.Vips.Image.new_from_binary/5`.

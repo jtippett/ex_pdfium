@@ -5,6 +5,7 @@ defmodule ExPdfiumTest do
   @sample Path.join(@fixtures, "sample.pdf")
   @encrypted Path.join(@fixtures, "encrypted.pdf")
   @color Path.join(@fixtures, "color.pdf")
+  @text Path.join(@fixtures, "text.pdf")
 
   describe "Phase 0: the NIF loads and pdfium initializes" do
     test "pdfium_version/0 returns a string" do
@@ -267,6 +268,129 @@ defmodule ExPdfiumTest do
 
       assert Enum.all?(sizes, &(&1 > 0))
       assert is_binary(ExPdfium.pdfium_version())
+    end
+  end
+
+  describe "Phase 3: text extraction" do
+    setup do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, doc: doc}
+    end
+
+    test "extract_text/2 returns a page's text", %{doc: doc} do
+      assert {:ok, text} = ExPdfium.extract_text(doc, 0)
+      assert text =~ "Hello pdfium world"
+    end
+
+    test "extract_text/1 returns the whole document, pages joined by form feed", %{doc: doc} do
+      assert {:ok, text} = ExPdfium.extract_text(doc)
+      assert text =~ "Hello pdfium world"
+      assert text =~ "Second page text"
+      assert [page0, page1] = String.split(text, "\f")
+      assert page0 =~ "Hello pdfium" and page1 =~ "Second page"
+    end
+
+    test "a blank page yields empty text" do
+      {:ok, blank} = ExPdfium.open(@sample)
+      assert {:ok, text} = ExPdfium.extract_text(blank, 0)
+      assert String.trim(text) == ""
+    end
+
+    test "extract_text on a closed document", %{doc: doc} do
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.extract_text(doc, 0)
+    end
+
+    test "extract_text on an out-of-range page", %{doc: doc} do
+      assert {:error, :page_out_of_bounds} = ExPdfium.extract_text(doc, 99)
+    end
+  end
+
+  describe "Phase 3: text segments (geometry)" do
+    setup do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, doc: doc}
+    end
+
+    test "text_segments/2 returns text runs with point bounds", %{doc: doc} do
+      assert {:ok, segments} = ExPdfium.text_segments(doc, 0)
+      assert segments != []
+
+      joined = segments |> Enum.map(& &1.text) |> Enum.join()
+      assert joined =~ "pdfium"
+
+      for %{bounds: b} <- segments do
+        assert b.left < b.right
+        # PDF coordinates: origin bottom-left, y increases upward.
+        assert b.bottom < b.top
+      end
+    end
+
+    test "a blank page has no segments" do
+      {:ok, blank} = ExPdfium.open(@sample)
+      assert {:ok, []} = ExPdfium.text_segments(blank, 0)
+    end
+
+    test "text_segments error cases", %{doc: doc} do
+      assert {:error, :page_out_of_bounds} = ExPdfium.text_segments(doc, 99)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.text_segments(doc, 0)
+    end
+  end
+
+  describe "Phase 3: text search" do
+    setup do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, doc: doc}
+    end
+
+    test "finds a term and returns bounding rects", %{doc: doc} do
+      assert {:ok, [match]} = ExPdfium.search_text(doc, 0, "pdfium")
+      assert match.text =~ "pdfium"
+      assert [%{left: l, right: r} | _] = match.rects
+      assert l < r
+    end
+
+    test "is case-insensitive by default, case-sensitive on request", %{doc: doc} do
+      assert {:ok, [_]} = ExPdfium.search_text(doc, 0, "World")
+      assert {:ok, []} = ExPdfium.search_text(doc, 0, "World", match_case: true)
+      assert {:ok, [_]} = ExPdfium.search_text(doc, 0, "world", match_case: true)
+    end
+
+    test "whole-word matching", %{doc: doc} do
+      assert {:ok, [_]} = ExPdfium.search_text(doc, 0, "world", whole_word: true)
+      assert {:ok, []} = ExPdfium.search_text(doc, 0, "orl", whole_word: true)
+    end
+
+    test "no match returns an empty list", %{doc: doc} do
+      assert {:ok, []} = ExPdfium.search_text(doc, 0, "absent")
+    end
+
+    test "an empty query is rejected", %{doc: doc} do
+      assert {:error, :empty_query} = ExPdfium.search_text(doc, 0, "")
+    end
+
+    test "search error cases", %{doc: doc} do
+      assert {:error, :page_out_of_bounds} = ExPdfium.search_text(doc, 99, "x")
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.search_text(doc, 0, "x")
+    end
+
+    test "text and search are safe under concurrency", %{doc: doc} do
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn _ ->
+            {:ok, t} = ExPdfium.extract_text(doc, 0)
+            {:ok, m} = ExPdfium.search_text(doc, 0, "pdfium")
+            t =~ "pdfium" and length(m) == 1
+          end,
+          max_concurrency: 32,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
     end
   end
 end

@@ -63,6 +63,10 @@ mod atoms {
         unsupported_background,
         bad_option,
         alloc_failed,
+        // text + search
+        text_failed,
+        empty_query,
+        search_failed,
     }
 }
 
@@ -586,6 +590,131 @@ fn document_render_page<'a>(
             stride,
             render.format_atom(),
         ))
+    })
+}
+
+// ── Text & search ────────────────────────────────────────────────────────────
+
+// (left, bottom, right, top) in PDF points; origin is the page's bottom-left.
+type Rect = (f64, f64, f64, f64);
+
+fn rect_of(b: &PdfRect) -> Rect {
+    (
+        b.left().value as f64,
+        b.bottom().value as f64,
+        b.right().value as f64,
+        b.top().value as f64,
+    )
+}
+
+fn page_index_u16(page_index: u32) -> Result<u16, Atom> {
+    page_index
+        .try_into()
+        .map_err(|_| atoms::page_out_of_bounds())
+}
+
+/// Phase 3: plain text of one page.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_extract_text(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<String, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let text = page.text().map_err(|_| atoms::text_failed())?;
+        Ok(text.all())
+    })
+}
+
+/// Phase 3: plain text of the whole document (pages joined by a form feed).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_extract_text_all(doc: ResourceArc<DocumentResource>) -> Result<String, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let mut out = String::new();
+        for (i, page) in document.pages().iter().enumerate() {
+            if i > 0 {
+                out.push('\u{0c}'); // form feed between pages
+            }
+            let text = page.text().map_err(|_| atoms::text_failed())?;
+            out.push_str(&text.all());
+        }
+        Ok(out)
+    })
+}
+
+/// Phase 3: text runs with per-segment bounds.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_text_segments(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<Vec<(String, Rect)>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let text = page.text().map_err(|_| atoms::text_failed())?;
+        let segments = text
+            .segments()
+            .iter()
+            .map(|seg| (seg.text(), rect_of(&seg.bounds())))
+            .collect();
+        Ok(segments)
+    })
+}
+
+/// Phase 3: search a page. Each match carries its text and the bounding rects of
+/// the segments it spans (a match can wrap across lines).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_search_text(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    query: String,
+    match_case: bool,
+    whole_word: bool,
+) -> Result<Vec<(String, Vec<Rect>)>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let text = page.text().map_err(|_| atoms::text_failed())?;
+
+        let options = PdfSearchOptions::new()
+            .match_case(match_case)
+            .match_whole_word(whole_word);
+        let search = text.search(&query, &options).map_err(|e| match e {
+            PdfiumError::TextSearchTargetIsEmpty => atoms::empty_query(),
+            _ => atoms::search_failed(),
+        })?;
+
+        let matches = search
+            .iter(PdfSearchDirection::SearchForward)
+            .map(|segments| {
+                let mut matched = String::new();
+                let mut rects = Vec::new();
+                for seg in segments.iter() {
+                    matched.push_str(&seg.text());
+                    rects.push(rect_of(&seg.bounds()));
+                }
+                (matched, rects)
+            })
+            .collect();
+        Ok(matches)
     })
 }
 

@@ -6,9 +6,9 @@ defmodule ExPdfium do
   there is no Rust toolchain or separately-installed pdfium to set up.
 
   > #### Work in progress {: .info}
-  > Opening documents, page counts, and page rendering work today. Text
-  > extraction, metadata, and structure are landing phase by phase — see
-  > `PORTING.md`. Functions for unimplemented phases raise until then.
+  > Opening documents, page counts, rendering, and text extraction/search work
+  > today. Metadata and structure are landing phase by phase — see `PORTING.md`.
+  > Functions for unimplemented phases raise until then.
 
   ## Example
 
@@ -126,6 +126,84 @@ defmodule ExPdfium do
     end
   end
 
+  @typedoc """
+  A bounding rectangle in PDF user-space points (1/72 inch). The origin is the
+  page's bottom-left corner and `y` increases upward, so `top >= bottom`.
+  """
+  @type bounds :: %{
+          left: float(),
+          bottom: float(),
+          right: float(),
+          top: float()
+        }
+
+  @doc """
+  Extract the plain text of a 0-indexed page.
+
+  Returns `{:error, :document_closed}` or `{:error, :page_out_of_bounds}` as
+  appropriate. A page with no text returns `{:ok, ""}`.
+  """
+  @spec extract_text(Document.t(), non_neg_integer()) ::
+          {:ok, String.t()} | {:error, atom()}
+  def extract_text(%Document{ref: ref}, page_index),
+    do: Native.document_extract_text(ref, page_index)
+
+  @doc """
+  Extract the plain text of the whole document. Pages are joined by a form-feed
+  (`"\\f"`) character. Returns `{:error, :document_closed}` if the document has
+  been closed.
+  """
+  @spec extract_text(Document.t()) :: {:ok, String.t()} | {:error, atom()}
+  def extract_text(%Document{ref: ref}), do: Native.document_extract_text_all(ref)
+
+  @doc """
+  Return the page's text as runs (segments), each with its bounding box.
+
+  Each element is `%{text: String.t(), bounds: t:bounds/0}`. Bounds are in PDF
+  points (see `t:bounds/0`).
+  """
+  @spec text_segments(Document.t(), non_neg_integer()) ::
+          {:ok, [%{text: String.t(), bounds: bounds()}]} | {:error, atom()}
+  def text_segments(%Document{ref: ref}, page_index) do
+    case Native.document_text_segments(ref, page_index) do
+      {:ok, segments} ->
+        {:ok, Enum.map(segments, fn {text, rect} -> %{text: text, bounds: rect_to_map(rect)} end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Search a page for `query`, returning the matches.
+
+  Each match is `%{text: String.t(), rects: [t:bounds/0]}` — a match can span more
+  than one rect when it wraps across lines.
+
+  ## Options
+    * `:match_case` — case-sensitive (default `false`)
+    * `:whole_word` — match whole words only (default `false`)
+
+  An empty `query` returns `{:error, :empty_query}`.
+  """
+  @spec search_text(Document.t(), non_neg_integer(), String.t(), keyword()) ::
+          {:ok, [%{text: String.t(), rects: [bounds()]}]} | {:error, atom()}
+  def search_text(%Document{ref: ref}, page_index, query, opts \\ []) do
+    match_case = Keyword.get(opts, :match_case, false)
+    whole_word = Keyword.get(opts, :whole_word, false)
+
+    case Native.document_search_text(ref, page_index, query, match_case, whole_word) do
+      {:ok, matches} ->
+        {:ok,
+         Enum.map(matches, fn {text, rects} ->
+           %{text: text, rects: Enum.map(rects, &rect_to_map/1)}
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
   @doc """
   Explicitly close a document, releasing pdfium memory early. Optional and
   idempotent.
@@ -137,4 +215,7 @@ defmodule ExPdfium do
   """
   @spec close(Document.t()) :: :ok
   def close(%Document{ref: ref}), do: Native.document_close(ref)
+
+  defp rect_to_map({left, bottom, right, top}),
+    do: %{left: left, bottom: bottom, right: right, top: top}
 end

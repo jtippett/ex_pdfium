@@ -50,4 +50,13 @@ defmodule ExPdfium.Native do
   # Phase 2 — render a page to a bitmap.
   # Returns {data, width, height, stride, format}.
   def document_render_page(_doc, _page_index, _opts), do: :erlang.nif_error(:nif_not_loaded)
+
+  # Phase 3 — text extraction & search.
+  def document_extract_text(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+  def document_extract_text_all(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_text_segments(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+
+  # `query` is binary; `match_case`/`whole_word` are booleans.
+  def document_search_text(_doc, _page_index, _query, _match_case, _whole_word),
+    do: :erlang.nif_error(:nif_not_loaded)
 end
