@@ -31,7 +31,11 @@ jobs:
             os: macos-latest
             pdfium_asset: pdfium-mac-arm64.tgz
           - target: x86_64-apple-darwin
-            os: macos-13
+            # Cross-compiled on the arm64 runner: the NIF links no C library at
+            # build time (dynamic pdfium binding), so no Intel runner is needed
+            # (macos-13 is scarce/deprecated). The x86_64 libpdfium is bundled
+            # regardless of build host.
+            os: macos-latest
             pdfium_asset: pdfium-mac-x64.tgz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
