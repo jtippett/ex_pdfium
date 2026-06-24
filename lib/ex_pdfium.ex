@@ -6,7 +6,7 @@ defmodule ExPdfium do
   there is no Rust toolchain or separately-installed pdfium to set up.
 
   > #### Work in progress {: .info}
-  > Opening documents and reading page counts work today. Rendering, text
+  > Opening documents, page counts, and page rendering work today. Text
   > extraction, metadata, and structure are landing phase by phase — see
   > `PORTING.md`. Functions for unimplemented phases raise until then.
 
@@ -14,16 +14,15 @@ defmodule ExPdfium do
 
       {:ok, doc} = ExPdfium.open("file.pdf")
       {:ok, 3} = ExPdfium.page_count(doc)
-      :ok = ExPdfium.close(doc)
-
-      # Encrypted documents:
-      {:ok, doc} = ExPdfium.open("secret.pdf", password: "hunter2")
-
-  Rendering (upcoming) will hand a raw bitmap to `Vix`/`Image`:
 
       {:ok, %ExPdfium.Bitmap{data: data, width: w, height: h}} =
         ExPdfium.render_page(doc, 0, dpi: 300)
       {:ok, image} = Vix.Vips.Image.new_from_binary(data, w, h, 4, :VIPS_FORMAT_UCHAR)
+
+      :ok = ExPdfium.close(doc)
+
+      # Encrypted documents:
+      {:ok, doc} = ExPdfium.open("secret.pdf", password: "hunter2")
   """
 
   alias ExPdfium.{Bitmap, Document, Native}
@@ -85,12 +84,38 @@ defmodule ExPdfium do
   def page_count(%Document{ref: ref}), do: Native.document_page_count(ref)
 
   @doc """
-  Render a 0-indexed page to an `ExPdfium.Bitmap`.
+  Render a 0-indexed page to an `ExPdfium.Bitmap` (an uncompressed 4-channel
+  pixel buffer).
 
-  Sizing options (provide one): `:dpi` (e.g. `300`), `:scale`, or `:width`/`:height`.
+  ## Options
+
+  Sizing (highest precedence first; the default is `dpi: 72`):
+    * `:width` and/or `:height` — output size in pixels (aspect-preserving if only
+      one is given)
+    * `:scale` — multiple of the natural size (`1.0` == 72 DPI)
+    * `:dpi` — dots per inch (e.g. `150`, `300`)
+
+  Other:
+    * `:format` — `:rgba` (default) or `:bgra` (pdfium's native order, no conversion)
+    * `:background` — `:white` (default) or `:transparent`
+
+  ## Bitmap layout
+
+  `data` is `width * height * 4` bytes, row-major, `stride` (== `width * 4`) bytes
+  per row, 8 bits per channel. Hand it straight to `Vix`/`Image`:
+
+      {:ok, %ExPdfium.Bitmap{data: data, width: w, height: h}} =
+        ExPdfium.render_page(doc, 0, dpi: 300)
+      {:ok, image} = Vix.Vips.Image.new_from_binary(data, w, h, 4, :VIPS_FORMAT_UCHAR)
+
+  ## Errors
+    * `:page_out_of_bounds` — no such page index
+    * `:document_closed` — the document was closed
+    * `:unsupported_format` / `:unsupported_background` — bad option value
+    * `:render_failed` — pdfium failed to render the page
   """
   @spec render_page(Document.t(), non_neg_integer(), keyword()) ::
-          {:ok, Bitmap.t()} | {:error, term()}
+          {:ok, Bitmap.t()} | {:error, atom()}
   def render_page(%Document{ref: ref}, page_index, opts \\ []) do
     case Native.document_render_page(ref, page_index, Map.new(opts)) do
       {:ok, {data, w, h, stride, format}} ->
@@ -102,8 +127,13 @@ defmodule ExPdfium do
   end
 
   @doc """
-  Explicitly close a document, releasing pdfium memory early. Optional — documents
-  are also closed when garbage-collected. Idempotent.
+  Explicitly close a document, releasing pdfium memory early. Optional and
+  idempotent.
+
+  Documents are also closed when garbage-collected, but that close is processed
+  asynchronously (on a background thread, so it can't stall a scheduler while a
+  long render holds the pdfium lock). Call this for deterministic, immediate
+  release.
   """
   @spec close(Document.t()) :: :ok
   def close(%Document{ref: ref}), do: Native.document_close(ref)

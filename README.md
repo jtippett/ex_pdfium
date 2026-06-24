@@ -7,10 +7,9 @@ Chromium PDF engine — via the Rust
 
 No Rust toolchain. No separately-installed pdfium. Add the dep and go.
 
-> **Status: early.** Opening documents and reading page counts work today
-> (precompiled, `v0.1`+). Rendering, text extraction, metadata, and structure are
-> landing phase by phase — see [`PORTING.md`](PORTING.md). Examples below for
-> unimplemented phases are marked *(upcoming)*.
+> **Status: early.** Opening documents, page counts, and page rendering work
+> today (precompiled, `v0.1`+). Text extraction, metadata, and structure are
+> landing phase by phase — see [`PORTING.md`](PORTING.md).
 
 ## Why
 
@@ -48,16 +47,20 @@ Documents are closed automatically on garbage collection; call
 `{:error, reason}` for problems like `:enoent`, `:invalid_pdf`, or
 `:password_error`.
 
-### Rendering *(upcoming)*
+### Rendering
 
 ```elixir
 {:ok, %ExPdfium.Bitmap{data: data, width: w, height: h}} =
-  ExPdfium.render_page(doc, 0, dpi: 300)
+  ExPdfium.render_page(doc, 0, dpi: 300)   # or scale:, or width:/height:
 
-# Hand the raw buffer straight to Vix/Image:
+# Hand the raw RGBA buffer straight to Vix/Image:
 {:ok, image} = Vix.Vips.Image.new_from_binary(data, w, h, 4, :VIPS_FORMAT_UCHAR)
 Image.write(image, "page.png")
 ```
+
+`render_page/3` takes `:dpi` / `:scale` / `:width` / `:height` for sizing,
+`format: :rgba | :bgra`, and `background: :white | :transparent`. The bitmap is an
+uncompressed 4-channel buffer (`width * height * 4` bytes).
 
 ## Development
 

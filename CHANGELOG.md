@@ -8,6 +8,16 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- Phase 2 — render a page to a bitmap: `ExPdfium.render_page/3` returns
+  `{:ok, %ExPdfium.Bitmap{data, width, height, stride, format}}`, an uncompressed
+  4-channel buffer ready for `Vix.Vips.Image.new_from_binary/5`.
+  - Sizing by `:dpi` (default 72), `:scale`, or `:width`/`:height`.
+  - `:format` `:rgba` (default) or `:bgra`; `:background` `:white` (default) or
+    `:transparent`.
+  - Errors: `:page_out_of_bounds`, `:document_closed`, `:render_failed`,
+    `:unsupported_format`, `:unsupported_background`, `:bad_option`.
+  - GC-driven document close is deferred to a dedicated cleanup thread so it never
+    blocks a BEAM scheduler while a long render holds the pdfium lock.
 - Phase 1 — open documents & page count:
   - `ExPdfium.open/1,2` opens a PDF from a file path or in-memory binary, with an
     optional `:password` for encrypted documents. Returns `{:ok, %ExPdfium.Document{}}`.

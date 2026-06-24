@@ -2,8 +2,10 @@
 name = "ex_pdfium"
 version = "0.1.0"
 edition = "2021"
-# pdfium-render tracks a recent toolchain; bump if cargo complains about MSRV.
-rust-version = "1.78"
+# Minimum supported Rust. The shipped NIF is precompiled (CI builds with stable),
+# so this only constrains rare from-source consumer builds — keep it recent rather
+# than artificially low. Bump freely when a newer std/lang feature helps.
+rust-version = "1.82"
 
 [lib]
 name = "ex_pdfium"
@@ -14,14 +16,14 @@ crate-type = ["cdylib"]
 # DEV/TEST default: dynamic binding. pdfium-render compiles with NO pdfium
 # present and loads libpdfium at runtime (Pdfium::bind_to_library).
 #
-# `sync` is load-bearing and must always be on: the BEAM calls dirty NIFs from a
-# pool of OS threads and pdfium is NOT thread-safe, so we keep ONE global Pdfium
-# in a `static`. pdfium-render's `sync` feature both (a) wraps every pdfium call
-# in a mutex (it implies the upstream `thread_safe` feature) AND (b) adds the
-# `unsafe impl Send + Sync for Pdfium` that lets that single instance be shared
-# across threads from a `static`. NOTE (verified against 0.8.37): `thread_safe`
-# ALONE only does (a) — Pdfium stays `!Send`/`!Sync` and won't compile in a
-# `static`. We need (b) too, so depend on `sync`, not `thread_safe`.
+# `sync` is load-bearing and must always be on. We keep ONE global Pdfium in a
+# `static`, which needs `unsafe impl Send + Sync for Pdfium` — and pdfium-render
+# gates that impl behind `sync` (plain `thread_safe` leaves Pdfium `!Send`/`!Sync`
+# and it won't compile in a `static`). NOTE: do NOT assume `sync`/`thread_safe`
+# serializes pdfium calls — verified against 0.8.37, it only brackets library
+# Init/Destroy; individual data calls run unlocked. We serialize every call with
+# our own global lock in src/lib.rs (`PDFIUM_LOCK`). So `sync` here is purely for
+# the Send+Sync markers.
 default = ["sync"]
 sync = ["pdfium-render/sync"]
 

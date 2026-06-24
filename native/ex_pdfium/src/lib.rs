@@ -25,7 +25,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use pdfium_render::prelude::*;
-use rustler::{Atom, Binary, ResourceArc, Term};
+use rustler::{Atom, Binary, Env, OwnedBinary, ResourceArc, Term};
 
 mod atoms {
     rustler::atoms! {
@@ -44,6 +44,25 @@ mod atoms {
         // resource state
         document_closed,
         lock_poisoned,
+        // render: option keys
+        dpi,
+        scale,
+        width,
+        height,
+        format,
+        background,
+        // render: option values
+        rgba,
+        bgra,
+        white,
+        transparent,
+        // render: errors
+        page_out_of_bounds,
+        render_failed,
+        unsupported_format,
+        unsupported_background,
+        bad_option,
+        alloc_failed,
     }
 }
 
@@ -62,6 +81,29 @@ static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
 // `unsafe impl Send + Sync` for Pdfium/PdfDocument is sound precisely because of
 // this discipline: access is effectively single-threaded.
 static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
+
+// Closing a document (`FPDF_CloseDocument`) is a pdfium call, so it must run
+// under `PDFIUM_LOCK`. A GC-driven `Drop` runs on a *normal* BEAM scheduler,
+// where blocking on a lock that a long render holds would stall the scheduler
+// past its budget. So `Drop` hands the document to this dedicated cleanup thread,
+// which closes it under the lock off-scheduler. `PdfDocument` is `Send` (the
+// `sync` feature), so moving it across the channel is sound.
+static CLEANUP: OnceLock<Mutex<std::sync::mpsc::Sender<PdfDocument<'static>>>> = OnceLock::new();
+
+fn cleanup_sender() -> &'static Mutex<std::sync::mpsc::Sender<PdfDocument<'static>>> {
+    CLEANUP.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<PdfDocument<'static>>();
+        std::thread::spawn(move || {
+            // Blocks until a document arrives; ends when all senders drop (never,
+            // in practice — the static `Sender` lives for the process lifetime).
+            for document in rx {
+                let _lock = pdfium_lock();
+                drop(document); // FPDF_CloseDocument, serialized under the lock
+            }
+        });
+        Mutex::new(tx)
+    })
+}
 
 // Dev/test only: the directory holding a dynamic libpdfium, supplied from Elixir
 // via `set_dynamic_lib_dir/1` before the first pdfium call. We CANNOT read this
@@ -203,22 +245,38 @@ struct DocumentResource {
 impl rustler::Resource for DocumentResource {}
 
 impl Drop for DocumentResource {
-    // GC path: dropping the PdfDocument calls FPDF_CloseDocument, a pdfium call,
-    // so serialize it under the global lock. If `close/1` already took the
-    // document, this is a no-op.
-    //
-    // INVARIANT: this must never run on a thread already holding `PDFIUM_LOCK`
-    // (the std Mutex is non-reentrant → self-deadlock). It can't today: a NIF
-    // holds its `ResourceArc` for the whole call, so a doc can't reach refcount 0
-    // mid-call. A future NIF that drops the last ref to a doc *inside* a
-    // `with_pdfium`/`pdfium_lock` section would break this.
+    // GC path. Closing is a pdfium call that must run under `PDFIUM_LOCK`, but this
+    // `Drop` runs on a normal BEAM scheduler — so hand the document to the cleanup
+    // thread, which closes it under the lock off-scheduler. The common path takes
+    // no pdfium lock here, so it can't stall the scheduler. If `close/1` already
+    // took the document, there's nothing to do.
     fn drop(&mut self) {
-        let _pdfium_lock = pdfium_lock();
         let slot = self
             .doc
             .get_mut()
             .unwrap_or_else(|poison| poison.into_inner());
-        drop(slot.take());
+        let Some(document) = slot.take() else {
+            return;
+        };
+        // The common path takes no pdfium lock. The fallbacks below DO take
+        // `pdfium_lock()`; they're only reachable if the cleanup thread is gone,
+        // and they must not run on a thread already holding `PDFIUM_LOCK` (the
+        // non-reentrant std Mutex would self-deadlock). No NIF drops a doc's last
+        // ref while inside `with_pdfium`, so today that can't happen.
+        match cleanup_sender().lock() {
+            Ok(tx) => {
+                // On send error (cleanup thread gone — shouldn't happen) the
+                // SendError owns the document; close it inline under the lock.
+                if let Err(returned) = tx.send(document) {
+                    let _lock = pdfium_lock();
+                    drop(returned.0);
+                }
+            }
+            Err(_) => {
+                let _lock = pdfium_lock();
+                drop(document);
+            }
+        }
     }
 }
 
@@ -314,6 +372,221 @@ fn document_close(doc: ResourceArc<DocumentResource>) -> Atom {
     let mut slot = doc.doc.lock().unwrap_or_else(|poison| poison.into_inner());
     drop(slot.take());
     atoms::ok()
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────────
+
+enum Format {
+    Rgba,
+    Bgra,
+}
+
+enum Sizing {
+    Dpi(f64),
+    Scale(f64),
+    Size {
+        width: Option<i32>,
+        height: Option<i32>,
+    },
+}
+
+impl Sizing {
+    fn is_positive(&self) -> bool {
+        match self {
+            Sizing::Dpi(d) => *d > 0.0,
+            Sizing::Scale(s) => *s > 0.0,
+            Sizing::Size { width, height } => {
+                width.is_none_or(|w| w > 0) && height.is_none_or(|h| h > 0)
+            }
+        }
+    }
+}
+
+enum Background {
+    White,
+    Transparent,
+}
+
+struct RenderOpts {
+    sizing: Sizing,
+    format: Format,
+    background: Background,
+}
+
+impl RenderOpts {
+    // Parse the opts map. Sizing precedence: width/height -> scale -> dpi (72).
+    // A present-but-wrong-typed or non-positive option is an error, not a silent
+    // fallback to the default.
+    fn from_term(opts: Term) -> Result<Self, Atom> {
+        let width = opt_i32(opts, atoms::width())?;
+        let height = opt_i32(opts, atoms::height())?;
+        let scale = opt_f64(opts, atoms::scale())?;
+        let dpi = opt_f64(opts, atoms::dpi())?;
+
+        let sizing = if width.is_some() || height.is_some() {
+            Sizing::Size { width, height }
+        } else if let Some(scale) = scale {
+            Sizing::Scale(scale)
+        } else {
+            Sizing::Dpi(dpi.unwrap_or(72.0))
+        };
+        if !sizing.is_positive() {
+            return Err(atoms::bad_option());
+        }
+
+        let format = match opt_atom(opts, atoms::format())? {
+            None => Format::Rgba,
+            Some(f) if f == atoms::rgba() => Format::Rgba,
+            Some(f) if f == atoms::bgra() => Format::Bgra,
+            Some(_) => return Err(atoms::unsupported_format()),
+        };
+
+        let background = match opt_atom(opts, atoms::background())? {
+            None => Background::White,
+            Some(b) if b == atoms::white() => Background::White,
+            Some(b) if b == atoms::transparent() => Background::Transparent,
+            Some(_) => return Err(atoms::unsupported_background()),
+        };
+
+        Ok(RenderOpts {
+            sizing,
+            format,
+            background,
+        })
+    }
+
+    fn to_config(&self) -> PdfRenderConfig {
+        // Native pixel order is BGRA; asking pdfium to reverse it yields RGBA with
+        // no post-conversion. The config clears to white by default.
+        let mut config =
+            PdfRenderConfig::new().set_reverse_byte_order(matches!(self.format, Format::Rgba));
+
+        config = match &self.sizing {
+            // pdfium's scale 1.0 == 72 DPI (1 point -> 1 pixel).
+            Sizing::Dpi(dpi) => config.scale_page_by_factor((dpi / 72.0) as f32),
+            Sizing::Scale(scale) => config.scale_page_by_factor(*scale as f32),
+            Sizing::Size {
+                width: Some(w),
+                height: Some(h),
+            } => config.set_target_size(*w, *h),
+            Sizing::Size {
+                width: Some(w),
+                height: None,
+            } => config.set_target_width(*w),
+            Sizing::Size {
+                width: None,
+                height: Some(h),
+            } => config.set_target_height(*h),
+            Sizing::Size {
+                width: None,
+                height: None,
+            } => config,
+        };
+
+        if matches!(self.background, Background::Transparent) {
+            config = config.set_clear_color(PdfColor::new(0, 0, 0, 0));
+        }
+
+        config
+    }
+
+    fn format_atom(&self) -> Atom {
+        match self.format {
+            Format::Rgba => atoms::rgba(),
+            Format::Bgra => atoms::bgra(),
+        }
+    }
+}
+
+// Optional opts: `Ok(None)` if the key is absent, `Ok(Some(v))` if present and
+// valid, `Err(:bad_option)` if present but the wrong type / out of range. (A
+// missing key makes `map_get` return `Err`, which we treat as absent.)
+fn opt_f64(opts: Term, key: Atom) -> Result<Option<f64>, Atom> {
+    match opts.map_get(key) {
+        Err(_) => Ok(None),
+        // Accept an Elixir integer or float.
+        Ok(t) => t
+            .decode::<f64>()
+            .ok()
+            .or_else(|| t.decode::<i64>().ok().map(|i| i as f64))
+            .map(Some)
+            .ok_or_else(atoms::bad_option),
+    }
+}
+
+fn opt_i32(opts: Term, key: Atom) -> Result<Option<i32>, Atom> {
+    match opts.map_get(key) {
+        Err(_) => Ok(None),
+        Ok(t) => t
+            .decode::<i64>()
+            .ok()
+            .and_then(|i| i32::try_from(i).ok())
+            .map(Some)
+            .ok_or_else(atoms::bad_option),
+    }
+}
+
+fn opt_atom(opts: Term, key: Atom) -> Result<Option<Atom>, Atom> {
+    match opts.map_get(key) {
+        Err(_) => Ok(None),
+        Ok(t) => t
+            .decode::<Atom>()
+            .map(Some)
+            .map_err(|_| atoms::bad_option()),
+    }
+}
+
+/// Phase 2: render a 0-indexed page to a 4-channel bitmap.
+/// Returns `{:ok, {data, width, height, stride, format}}`. The page is fetched,
+/// rendered, and dropped within the call (never stored).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_render_page<'a>(
+    env: Env<'a>,
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    opts: Term<'a>,
+) -> Result<(Binary<'a>, u32, u32, u32, Atom), Atom> {
+    let render = RenderOpts::from_term(opts)?;
+    let index: u16 = page_index
+        .try_into()
+        .map_err(|_| atoms::page_out_of_bounds())?;
+
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+
+        let bitmap = page
+            .render_with_config(&render.to_config())
+            .map_err(|_| atoms::render_failed())?;
+
+        let width = u32::try_from(bitmap.width()).unwrap_or(0);
+        let height = u32::try_from(bitmap.height()).unwrap_or(0);
+        let bytes = bitmap.as_raw_bytes();
+        // Derive stride from the actual buffer rather than assuming width*4 —
+        // pdfium can pad rows for some formats. (Ours is 4-channel, so this is
+        // width*4 in practice, but we don't bake that assumption in.)
+        let stride = if height == 0 {
+            0
+        } else {
+            (bytes.len() / height as usize) as u32
+        };
+
+        let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
+        binary.as_mut_slice().copy_from_slice(&bytes);
+
+        Ok((
+            binary.release(env),
+            width,
+            height,
+            stride,
+            render.format_atom(),
+        ))
+    })
 }
 
 rustler::init!("Elixir.ExPdfium.Native");
