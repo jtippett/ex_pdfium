@@ -50,8 +50,7 @@ libc = "0.2"
 # crate + its deps), which we don't need yet. But the default ALSO carries a
 # mandatory pdfium API-version feature (`pdfium_latest` -> `pdfium_7543`): without
 # one selected, pdfium-render has no FFI surface to bind. So re-add it here as a
-# non-optional dependency feature — it must be on for BOTH the dynamic dev build
-# and release.yml's `--no-default-features` static build, neither of which would
-# otherwise enable it. Keep the linked pdfium binary (PDFIUM_TAG) at chromium/7543
-# to match this API version.
+# non-optional dependency feature, so it's always on regardless of which crate
+# features are toggled. Keep the bundled pdfium binary (PDFIUM_TAG) at
+# chromium/7543 to match this API version.
 pdfium-render = { version = "=0.8.37", default-features = false, features = ["pdfium_latest"] }

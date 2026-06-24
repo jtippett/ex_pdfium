@@ -1,10 +1,10 @@
 name: Build precompiled NIFs
 
-# Push a tag (v0.1.0, v0.2.0, ...) to: build a statically-linked NIF for every
-# target, attach them to a GitHub release, generate the checksum file from those
-# artifacts, and publish to Hex. The `publish` job is gated by the `hex`
-# environment, so it pauses for a required-reviewer approval before anything
-# ships. See UPDATE_PROCEDURE.md.
+# Push a tag (v0.1.0, v0.2.0, ...) to: build a dynamically-bound NIF for every
+# target and package it together with a bundled libpdfium, attach them to a
+# GitHub release, generate the checksum file from those artifacts, and publish to
+# Hex. The `publish` job is gated by the `hex` environment, so it pauses for a
+# required-reviewer approval before anything ships. See UPDATE_PROCEDURE.md.
 
 on:
   push:
@@ -15,8 +15,8 @@ permissions:
   contents: write
 
 env:
-  # The pdfium binary release to link against. Must match pdfium-render's bound
-  # API (pdfium_latest == pdfium_7543 for the pinned 0.8.37). Bump via UPDATE_PROCEDURE.md.
+  # The pdfium binary release to bundle. Must match pdfium-render's bound API
+  # (pdfium_latest == pdfium_7543 for the pinned 0.8.37). Bump via UPDATE_PROCEDURE.md.
   PDFIUM_TAG: "chromium/7543"
 
 jobs:

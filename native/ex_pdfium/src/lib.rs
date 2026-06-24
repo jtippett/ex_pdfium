@@ -42,15 +42,20 @@ static DYNAMIC_LIB_DIR: OnceLock<String> = OnceLock::new();
 fn nif_sibling_dir() -> Option<String> {
     use std::ffi::CStr;
     let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-    let addr = &PDFIUM as *const _ as *const libc::c_void;
+    let addr = std::ptr::addr_of!(PDFIUM) as *const libc::c_void;
     if unsafe { libc::dladdr(addr, &mut info) } == 0 || info.dli_fname.is_null() {
         return None;
     }
     let path = unsafe { CStr::from_ptr(info.dli_fname) }.to_str().ok()?;
-    std::path::Path::new(path)
-        .parent()?
-        .to_str()
-        .map(str::to_string)
+    let dir = std::path::Path::new(path).parent()?.to_str()?.to_string();
+    // Only claim this dir if a libpdfium is actually bundled here; otherwise
+    // return None so the caller falls through to the system loader (e.g. a
+    // from-source consumer build, which doesn't bundle libpdfium).
+    if std::path::Path::new(&Pdfium::pdfium_platform_library_name_at_path(&dir)).exists() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 #[cfg(all(not(feature = "static"), not(unix)))]
@@ -60,7 +65,8 @@ fn nif_sibling_dir() -> Option<String> {
 
 fn pdfium() -> &'static Pdfium {
     PDFIUM.get_or_init(|| {
-        // Shipping build: linked statically into this .so.
+        // Optional static link (user-supplied libpdfium.a via the `static`
+        // feature; NOT the shipped path — release bundles a dynamic libpdfium).
         #[cfg(feature = "static")]
         let bindings = Pdfium::bind_to_statically_linked_library()
             .expect("statically linked pdfium failed to bind");
@@ -78,9 +84,11 @@ fn pdfium() -> &'static Pdfium {
                 .or_else(|| std::env::var("PDFIUM_DYNAMIC_LIB_PATH").ok())
                 .or_else(nif_sibling_dir);
             let bound = match dir {
+                // A resolved dir is a libpdfium we were told about or that ships
+                // beside us; if it won't load, fail loudly rather than silently
+                // binding the pinned API against an unrelated system pdfium.
                 Some(dir) => {
                     Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir))
-                        .or_else(|_| Pdfium::bind_to_system_library())
                 }
                 None => Pdfium::bind_to_system_library(),
             };
