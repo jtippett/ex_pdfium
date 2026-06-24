@@ -1,0 +1,37 @@
+[package]
+name = "ex_pdfium"
+version = "0.1.0"
+edition = "2021"
+# pdfium-render tracks a recent toolchain; bump if cargo complains about MSRV.
+rust-version = "1.78"
+
+[lib]
+name = "ex_pdfium"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[features]
+# DEV/TEST default: dynamic binding. pdfium-render compiles with NO pdfium
+# present and loads libpdfium at runtime (Pdfium::bind_to_library). `thread_safe`
+# wraps every pdfium call in a mutex — required because the BEAM calls dirty NIFs
+# from a pool of OS threads and pdfium is NOT thread-safe.
+default = ["thread_safe"]
+thread_safe = ["pdfium-render/thread_safe"]
+
+# SHIPPING: release.yml turns these on per target to produce a single
+# self-contained NIF (libpdfium.a linked in). `static` needs PDFIUM_STATIC_LIB_PATH
+# at build time. The C++ stdlib differs by target — pick exactly one:
+#   linux-gnu/musl -> libstdcpp ; apple-darwin -> libcpp
+# NOTE: verify these feature names against the pinned pdfium-render version
+# (docs.rs / `cargo add pdfium-render`); they are the documented names as of writing.
+static = ["pdfium-render/static"]
+libstdcpp = ["pdfium-render/libstdc++"]
+libcpp = ["pdfium-render/libc++"]
+
+[dependencies]
+rustler = "0.38"
+
+# pdfium-render is published to crates.io, so pin an exact semver.
+# FIRST TASK (Phase 0): `cargo add pdfium-render` to resolve the real latest,
+# then pin it exactly here. `"0.8"` is a placeholder caret.
+pdfium-render = { version = "0.8", default-features = false }

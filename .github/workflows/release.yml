@@ -1,0 +1,171 @@
+name: Build precompiled NIFs
+
+# Push a tag (v0.1.0, v0.2.0, ...) to: build a statically-linked NIF for every
+# target, attach them to a GitHub release, generate the checksum file from those
+# artifacts, and publish to Hex. The `publish` job is gated by the `hex`
+# environment, so it pauses for a required-reviewer approval before anything
+# ships. See UPDATE_PROCEDURE.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  # The pdfium binary release to link against. Bump via UPDATE_PROCEDURE.md.
+  PDFIUM_TAG: "chromium/7506"
+
+jobs:
+  build:
+    name: NIF ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            pdfium_asset: pdfium-mac-arm64.tgz
+            cxx_feature: libcpp
+          - target: x86_64-apple-darwin
+            os: macos-13
+            pdfium_asset: pdfium-mac-x64.tgz
+            cxx_feature: libcpp
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            pdfium_asset: pdfium-linux-x64.tgz
+            cxx_feature: libstdcpp
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            pdfium_asset: pdfium-linux-arm64.tgz
+            cxx_feature: libstdcpp
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/ex_pdfium
+
+      # Static pdfium: download the static archive, extract libpdfium.a, point
+      # PDFIUM_STATIC_LIB_PATH at its containing dir. (Asset names with "static"
+      # may differ by release — verify against the pinned PDFIUM_TAG's assets.)
+      - name: Download static pdfium
+        id: pdfium
+        run: |
+          mkdir -p pdfium-static
+          asset="${{ matrix.pdfium_asset }}"
+          # Prefer a static build asset when published as a separate tgz.
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/${asset}"
+          curl -fsSL "$url" -o pdfium.tgz
+          tar -xzf pdfium.tgz -C pdfium-static
+          # libpdfium.a lives under lib/ in the static archives.
+          libdir="$(dirname "$(find pdfium-static -name 'libpdfium.a' | head -n1)")"
+          echo "libdir=$libdir" >> "$GITHUB_OUTPUT"
+
+      - name: Build NIF (static)
+        working-directory: native/ex_pdfium
+        env:
+          PDFIUM_STATIC_LIB_PATH: ${{ github.workspace }}/${{ steps.pdfium.outputs.libdir }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            --no-default-features \
+            --features thread_safe,static,${{ matrix.cxx_feature }}
+
+      - name: Package NIF
+        id: package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          # NIF ABI version — keep in sync with the rustler version (0.38 -> 2.15).
+          NIF_NAME="libex_pdfium-v${VERSION}-nif-2.15-${TARGET}.so"
+          if [[ "$TARGET" == *"apple"* ]]; then
+            SRC="native/ex_pdfium/target/${TARGET}/release/libex_pdfium.dylib"
+          else
+            SRC="native/ex_pdfium/target/${TARGET}/release/libex_pdfium.so"
+          fi
+          cp "$SRC" "${NIF_NAME}"
+          tar -czf "${NIF_NAME}.tar.gz" "${NIF_NAME}"
+          echo "archive=${NIF_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload NIF artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nif-${{ matrix.target }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: nif-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*.tar.gz
+
+  # Generates the precompiled-NIF checksum file from the artifacts just attached
+  # to the GitHub release, then publishes to Hex. Gated by the `hex` environment:
+  # GitHub pauses here for a required reviewer to approve, so you eyeball the
+  # release before anything ships. No manual checksum commit, no re-tag.
+  publish:
+    name: Publish to Hex
+    needs: release
+    runs-on: ubuntu-latest
+    environment: hex
+    env:
+      # Build the NIF locally so `mix compile` doesn't try to download a NIF
+      # whose checksum isn't generated yet (the chicken-and-egg).
+      EXPDFIUM_BUILD: "1"
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.2"
+          elixir-version: "1.18.0"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The local build for checksum-gen uses the dynamic binding; provide libpdfium.
+      - name: Download libpdfium (dynamic, for local build)
+        run: |
+          mkdir -p priv/pdfium
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/pdfium-linux-x64.tgz"
+          curl -fsSL "$url" -o pdfium.tgz
+          tar -xzf pdfium.tgz -C priv/pdfium lib/libpdfium.so
+          mv priv/pdfium/lib/libpdfium.so priv/pdfium/ && rmdir priv/pdfium/lib || true
+          echo "PDFIUM_DYNAMIC_LIB_PATH=${{ github.workspace }}/priv/pdfium" >> "$GITHUB_ENV"
+
+      - name: Fetch dependencies
+        run: mix deps.get
+
+      - name: Generate checksums from the released artifacts
+        run: mix rustler_precompiled.download ExPdfium.Native --all --print
+
+      - name: Publish package to Hex
+        run: mix hex.publish package --yes
+
+      - name: Publish docs to HexDocs
+        continue-on-error: true
+        run: mix hex.publish docs --yes

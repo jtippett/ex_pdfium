@@ -1,0 +1,39 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where third-party dependencies like ExDoc output generated docs.
+/doc/
+
+# Temporary files, for example, from tests.
+/tmp/
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+ex_pdfium-*.tar
+
+# Rust build artifacts
+/native/ex_pdfium/target/
+
+# Compiled NIF shared library
+/priv/native/
+
+# Downloaded pdfium binaries (dev) — never commit these
+/priv/pdfium/
+*.dylib
+*.so
+*.a
+
+.DS_Store
+.private-journal/
+.claude/
