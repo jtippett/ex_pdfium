@@ -19,11 +19,26 @@ dance). This handoff is uncommitted scratch — keep it refreshed as you go.
 macOS arm64 / OTP 29, full gate clean (fmt, clippy `-D warnings`, warnings-as-
 errors compile). Phase 1/2 stubs are deferred to their phases (see below).
 
-**Still TODO in Phase 0 (needs a release, so gated on user go-ahead):** wire
-`release.yml`'s **static** build (download static libpdfium per target →
-`PDFIUM_STATIC_LIB_PATH=… cargo build --release --features sync,static,<cxx>`),
-tag `v0.1.0`, regen the checksum file, and prove a clean precompiled `mix
-deps.get` on this machine. **Do not tag/release without an explicit go-ahead.**
+**Shipping strategy CHANGED (the §2a "central decision"):** static linking is
+**infeasible** — bblanchon publishes no static `libpdfium.a`, only the dynamic
+lib. So the shipped NIF binds pdfium **dynamically** and **bundles the dynamic
+`libpdfium` inside each per-target precompiled tarball**; rustler_precompiled
+extracts the whole tarball into `priv/native/`, and the NIF **self-locates** the
+sibling libpdfium via `dladdr` (no Elixir wiring, no env, no rpath). This is the
+"custom tarball bundling a dynamic libpdfium" alternative the open questions
+already anticipated. Proven locally on macOS arm64. `release.yml` rewritten for
+this; the `static`/`libcpp`/`libstdcpp` features are kept only for a
+user-supplied `.a`.
+
+**Still TODO in Phase 0:** tag `v0.1.0`, watch the build matrix attach one
+bundled tarball per target, regen the checksum file, and prove a clean
+precompiled `mix deps.get` on this machine. (User gave go-ahead to push + test
+releasing; `hex.publish` stays gated by the `hex` environment.)
+
+> **Known limitation:** a *from-source* consumer build (force_build / unsupported
+> target) compiles the NIF but does NOT auto-bundle libpdfium — such users must
+> supply one (PDFIUM_DYNAMIC_LIB_PATH or a system libpdfium). The 4 precompiled
+> targets are self-contained.
 
 ### What Phase 0 (dev) settled — corrections to scaffold assumptions
 - **`pdfium-render` pinned `=0.8.37`** (latest 0.8.x). 0.9.x exists but reworks
@@ -129,12 +144,13 @@ Each phase also gets a README section, a CHANGELOG entry, and an `examples/*.exs
 
 ## Key decisions & facts (the crux — internalize before coding)
 
-- **Static-link pdfium for the shipped NIF; dynamic-bind for dev/test.** Static
-  (`pdfium-render` `static` feature + `PDFIUM_STATIC_LIB_PATH`) gives one
-  self-contained `.so` per target — the only mode that fits rustler_precompiled's
-  single-artifact model. Dev/test keeps the default dynamic binding (compiles
-  with no pdfium present; loads a downloaded `libpdfium` at runtime) for a fast
-  inner loop. See PORTING §2a — **the central decision.**
+- **Bundle the dynamic libpdfium; dynamic-bind everywhere.** (UPDATED — see the
+  TL;DR.) Static linking turned out infeasible (no bblanchon `.a`). The shipped
+  per-target tarball carries the NIF **and** the dynamic `libpdfium`; rustler_
+  precompiled extracts both into `priv/native/` and the NIF self-locates the lib
+  via `dladdr`. Dev/test uses the same dynamic binding, just pointed at
+  `priv/pdfium` via `set_dynamic_lib_dir/1`. PORTING §2a's static recommendation
+  is superseded.
 - **pdfium is NOT thread-safe.** Enable pdfium-render's **`thread_safe`** feature
   AND construct the `Pdfium` **once** in a `OnceLock` → `&'static`. All
   pdfium-touching NIFs are **`DirtyCpu`** (no tokio — synchronous, CPU-heavy).

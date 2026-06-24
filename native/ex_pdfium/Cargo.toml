@@ -25,19 +25,22 @@ crate-type = ["cdylib"]
 default = ["sync"]
 sync = ["pdfium-render/sync"]
 
-# SHIPPING: release.yml turns these on per target to produce a single
-# self-contained NIF (libpdfium.a linked in). `static` needs PDFIUM_STATIC_LIB_PATH
-# at build time. The C++ stdlib differs by target — pick exactly one:
-#   linux-gnu/musl -> libstdcpp ; apple-darwin -> libcpp
-# Verified against pdfium-render 0.8.37 (crates.io feature list): the upstream
-# features are `static`, `libstdc++`, `libc++`; note `libc++`/`libstdc++` each
-# already imply `static`, so release.yml passing `static,<cxx>` is belt-and-braces.
+# OPTIONAL static linking. NOTE: the shipped release does NOT use these — it
+# bundles the dynamic libpdfium beside the NIF (bblanchon publishes no static
+# libpdfium.a, only the dynamic lib; see HANDOFF). These remain for anyone who
+# supplies their own libpdfium.a via PDFIUM_STATIC_LIB_PATH. `static` needs that
+# env var at build time; the C++ stdlib differs by target — pick exactly one:
+#   linux-gnu/musl -> libstdcpp ; apple-darwin -> libcpp. Verified against
+# pdfium-render 0.8.37: `libc++`/`libstdc++` each already imply `static`.
 static = ["pdfium-render/static"]
 libstdcpp = ["pdfium-render/libstdc++"]
 libcpp = ["pdfium-render/libc++"]
 
 [dependencies]
 rustler = "0.38"
+# `dladdr`, to locate the NIF's own directory at runtime so it can load a
+# libpdfium bundled beside it in the precompiled tarball (see src/lib.rs).
+libc = "0.2"
 
 # pdfium-render is published to crates.io; pin it exactly (bump via UPDATE_PROCEDURE).
 # 0.8.37 is the latest 0.8.x (`cargo add` resolved it); 0.9.x exists but reworks the

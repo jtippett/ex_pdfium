@@ -50,9 +50,10 @@ Documents are closed automatically on garbage collection; call
 
 ## Development
 
-The shipped NIF links pdfium **statically**. For local work, the default build
-binds pdfium **dynamically** — download a `libpdfium` once and point the tests at
-it:
+The shipped NIF binds pdfium **dynamically** and loads a `libpdfium` bundled
+**inside the precompiled tarball**, right beside the NIF (bblanchon publishes no
+static `libpdfium.a`). For local work, download a `libpdfium` once and point the
+tests at it:
 
 ```bash
 just fetch-pdfium            # downloads libpdfium for this host into priv/pdfium

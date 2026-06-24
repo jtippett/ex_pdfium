@@ -33,6 +33,31 @@ static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
 #[cfg(not(feature = "static"))]
 static DYNAMIC_LIB_DIR: OnceLock<String> = OnceLock::new();
 
+// Production discovery: locate the directory of THIS loaded NIF via `dladdr` on a
+// symbol we own, so we can pick up a libpdfium shipped *beside* it. The release
+// tarball bundles the dynamic libpdfium next to the NIF (rustler_precompiled
+// extracts the whole archive into priv/native), so no Elixir wiring or env var is
+// needed in production — the NIF finds its own sibling.
+#[cfg(all(not(feature = "static"), unix))]
+fn nif_sibling_dir() -> Option<String> {
+    use std::ffi::CStr;
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    let addr = &PDFIUM as *const _ as *const libc::c_void;
+    if unsafe { libc::dladdr(addr, &mut info) } == 0 || info.dli_fname.is_null() {
+        return None;
+    }
+    let path = unsafe { CStr::from_ptr(info.dli_fname) }.to_str().ok()?;
+    std::path::Path::new(path)
+        .parent()?
+        .to_str()
+        .map(str::to_string)
+}
+
+#[cfg(all(not(feature = "static"), not(unix)))]
+fn nif_sibling_dir() -> Option<String> {
+    None
+}
+
 fn pdfium() -> &'static Pdfium {
     PDFIUM.get_or_init(|| {
         // Shipping build: linked statically into this .so.
@@ -40,24 +65,29 @@ fn pdfium() -> &'static Pdfium {
         let bindings = Pdfium::bind_to_statically_linked_library()
             .expect("statically linked pdfium failed to bind");
 
-        // Dev/test build: load a dynamic libpdfium from the dir Elixir handed us
-        // (or an OS-level PDFIUM_DYNAMIC_LIB_PATH), else the system library.
+        // Dynamic binding. Resolution order:
+        //   1. dir handed in from Elixir via set_dynamic_lib_dir/1 (dev/test),
+        //   2. an OS-level PDFIUM_DYNAMIC_LIB_PATH (set before the BEAM boots),
+        //   3. the NIF's own directory (production: libpdfium bundled beside it),
+        //   4. the system loader's search path.
         #[cfg(not(feature = "static"))]
         let bindings = {
             let dir = DYNAMIC_LIB_DIR
                 .get()
                 .cloned()
-                .or_else(|| std::env::var("PDFIUM_DYNAMIC_LIB_PATH").ok());
-            match dir {
+                .or_else(|| std::env::var("PDFIUM_DYNAMIC_LIB_PATH").ok())
+                .or_else(nif_sibling_dir);
+            let bound = match dir {
                 Some(dir) => {
                     Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir))
                         .or_else(|_| Pdfium::bind_to_system_library())
-                        .expect("could not load libpdfium from the dir given to set_dynamic_lib_dir/1")
                 }
-                None => Pdfium::bind_to_system_library().expect(
-                    "no libpdfium found (call ExPdfium.Native.set_dynamic_lib_dir/1 or install pdfium)",
-                ),
-            }
+                None => Pdfium::bind_to_system_library(),
+            };
+            bound.expect(
+                "could not load libpdfium (bundled lib missing? else set \
+                 ExPdfium.Native.set_dynamic_lib_dir/1 or install pdfium)",
+            )
         };
 
         Pdfium::new(bindings)

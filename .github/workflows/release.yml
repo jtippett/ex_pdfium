@@ -30,19 +30,15 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             pdfium_asset: pdfium-mac-arm64.tgz
-            cxx_feature: libcpp
           - target: x86_64-apple-darwin
             os: macos-13
             pdfium_asset: pdfium-mac-x64.tgz
-            cxx_feature: libcpp
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             pdfium_asset: pdfium-linux-x64.tgz
-            cxx_feature: libstdcpp
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             pdfium_asset: pdfium-linux-arm64.tgz
-            cxx_feature: libstdcpp
 
     steps:
       - uses: actions/checkout@v7
@@ -59,32 +55,25 @@ jobs:
         with:
           workspaces: native/ex_pdfium
 
-      # Static pdfium: download the static archive, extract libpdfium.a, point
-      # PDFIUM_STATIC_LIB_PATH at its containing dir. (Asset names with "static"
-      # may differ by release — verify against the pinned PDFIUM_TAG's assets.)
-      - name: Download static pdfium
+      # bblanchon ships no static libpdfium.a, so the NIF binds pdfium
+      # *dynamically* and loads a libpdfium bundled beside it at runtime (the NIF
+      # self-locates via dladdr — see native/ex_pdfium/src/lib.rs). Download the
+      # dynamic lib here only to bundle it; the build needs no pdfium present.
+      - name: Download libpdfium (dynamic, to bundle)
         id: pdfium
         run: |
-          mkdir -p pdfium-static
-          asset="${{ matrix.pdfium_asset }}"
-          # Prefer a static build asset when published as a separate tgz.
-          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/${asset}"
+          mkdir -p pdfium-dyn
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/${{ matrix.pdfium_asset }}"
           curl -fsSL "$url" -o pdfium.tgz
-          tar -xzf pdfium.tgz -C pdfium-static
-          # libpdfium.a lives under lib/ in the static archives.
-          libdir="$(dirname "$(find pdfium-static -name 'libpdfium.a' | head -n1)")"
-          echo "libdir=$libdir" >> "$GITHUB_OUTPUT"
+          libfile="$(tar -tzf pdfium.tgz | grep -E 'lib/libpdfium\.(so|dylib)$' | head -n1)"
+          tar -xzf pdfium.tgz -C pdfium-dyn "$libfile"
+          echo "lib=${{ github.workspace }}/pdfium-dyn/${libfile}" >> "$GITHUB_OUTPUT"
 
-      - name: Build NIF (static)
+      - name: Build NIF (dynamic binding)
         working-directory: native/ex_pdfium
-        env:
-          PDFIUM_STATIC_LIB_PATH: ${{ github.workspace }}/${{ steps.pdfium.outputs.libdir }}
-        run: |
-          cargo build --release --target ${{ matrix.target }} \
-            --no-default-features \
-            --features sync,static,${{ matrix.cxx_feature }}
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package NIF
+      - name: Package NIF + bundled libpdfium
         id: package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -96,8 +85,15 @@ jobs:
           else
             SRC="native/ex_pdfium/target/${TARGET}/release/libex_pdfium.so"
           fi
-          cp "$SRC" "${NIF_NAME}"
-          tar -czf "${NIF_NAME}.tar.gz" "${NIF_NAME}"
+          LIB_SRC="${{ steps.pdfium.outputs.lib }}"
+          LIB_NAME="$(basename "$LIB_SRC")"
+          # Stage both at the archive root: rustler_precompiled extracts the whole
+          # tarball into priv/native/, so the NIF and its sibling libpdfium land
+          # together where dladdr expects them.
+          mkdir -p stage
+          cp "$SRC" "stage/${NIF_NAME}"
+          cp "$LIB_SRC" "stage/${LIB_NAME}"
+          tar -czf "${NIF_NAME}.tar.gz" -C stage "${NIF_NAME}" "${LIB_NAME}"
           echo "archive=${NIF_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload NIF artifact

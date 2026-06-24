@@ -22,3 +22,8 @@ not pdfium-render's).
   live in a `static`. `release.yml` updated accordingly.
 - Pinned pdfium binary tag bumped `chromium/7506` → `chromium/7543` to match the
   pdfium API version pdfium-render 0.8.37 binds (`pdfium_latest`).
+- Shipping strategy: the precompiled NIF binds pdfium **dynamically** and bundles
+  the dynamic `libpdfium` inside each per-target tarball (rustler_precompiled
+  extracts it next to the NIF; the NIF self-locates it via `dladdr`). bblanchon
+  ships no static `libpdfium.a`, so static linking isn't used. The optional
+  `static`/`libcpp`/`libstdcpp` features remain for a user-supplied `.a`.
