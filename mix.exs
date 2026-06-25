@@ -37,7 +37,11 @@ defmodule ExPdfium.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      links: %{"GitHub" => @source_url},
+      maintainers: ["James Tippett"],
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+      },
       # Ship the Rust sources so a from-source build (rustler_precompiled
       # force_build / unsupported targets) works for consumers.
       files:
@@ -51,7 +55,18 @@ defmodule ExPdfium.MixProject do
       main: "readme",
       extras: ["README.md", "CHANGELOG.md"],
       source_url: @source_url,
-      source_ref: "v#{@version}"
+      source_ref: "v#{@version}",
+      # Group the API by capability so the sidebar mirrors the README sections.
+      # Functions are tagged with `@doc group:` in lib/ex_pdfium.ex.
+      groups_for_docs: [
+        Documents: &(&1[:group] == :documents),
+        Rendering: &(&1[:group] == :rendering),
+        "Text & search": &(&1[:group] == :text),
+        "Metadata & geometry": &(&1[:group] == :metadata),
+        "Structure & navigation": &(&1[:group] == :structure),
+        "Forms & annotations": &(&1[:group] == :forms),
+        Diagnostics: &(&1[:group] == :diagnostics)
+      ]
     ]
   end
 end

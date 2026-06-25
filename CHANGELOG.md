@@ -70,8 +70,8 @@ end to end. PDF document/page/text APIs land in later phases (see `PORTING.md`).
   and the porting plan (`PORTING.md`).
 - Phase 0 (toolchain): `ExPdfium.pdfium_version/0`, a load-proof NIF that binds
   and initializes pdfium. Pinned `pdfium-render = "=0.8.37"`. The dev/test build
-  binds pdfium dynamically; the libpdfium directory is passed to the NIF via
-  `ExPdfium.Native.set_dynamic_lib_dir/1` (env vars set with `System.put_env`
+  binds pdfium dynamically; the libpdfium directory is passed to the NIF via a
+  `set_dynamic_lib_dir/1` function argument (env vars set with `System.put_env`
   don't reach a NIF).
 
 ### Changed

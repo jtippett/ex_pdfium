@@ -7,10 +7,10 @@ Chromium PDF engine — via the Rust
 
 No Rust toolchain. No separately-installed pdfium. Add the dep and go.
 
-> **Status: early.** Opening documents, page counts, rendering, text
-> extraction/search, metadata, page geometry, permissions, and structure
-> (bookmarks/links/attachments) work today (precompiled, `v0.1`+). Read forms and
-> annotations are next — see [`PORTING.md`](PORTING.md).
+> **A read & extract toolkit.** Open documents and count pages, render pages to
+> bitmaps, extract and search text, read metadata, page geometry and permissions,
+> walk structure (bookmarks, links, attachments), and read forms and annotations.
+> It does **not** create, edit, or save PDFs.
 
 ## Why
 
@@ -146,13 +146,15 @@ precompiled one. CI runs the full gate: `mix format --check-formatted`,
 
 ## Releasing
 
-See [`UPDATE_PROCEDURE.md`](UPDATE_PROCEDURE.md). In short: `just release` bumps
+See [`UPDATE_PROCEDURE.md`](https://github.com/jtippett/ex_pdfium/blob/main/UPDATE_PROCEDURE.md).
+In short: `just release` bumps
 the version, rolls the CHANGELOG, tags, and pushes; the tag triggers a build
 matrix that attaches one NIF per target to a GitHub release; checksums are
 regenerated from those artifacts; Hex publish is gated behind a manual approval.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). pdfium itself is BSD-3-Clause (Google/Chromium);
+MIT — see [LICENSE](https://github.com/jtippett/ex_pdfium/blob/main/LICENSE).
+pdfium itself is BSD-3-Clause (Google/Chromium);
 the precompiled pdfium binaries come from
 [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries).

@@ -28,6 +28,7 @@ defmodule ExPdfium do
 
   alias ExPdfium.{Bitmap, Document, Native}
 
+  @doc group: :diagnostics
   @doc """
   Return a marker string confirming the native pdfium library loaded and
   initialized. Useful as a smoke test that the precompiled NIF is healthy.
@@ -38,6 +39,7 @@ defmodule ExPdfium do
   @spec pdfium_version() :: String.t()
   def pdfium_version, do: Native.pdfium_version()
 
+  @doc group: :documents
   @doc """
   Open a PDF from a file path or an in-memory binary.
 
@@ -74,6 +76,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :documents
   @doc """
   Number of pages in the document.
 
@@ -84,6 +87,7 @@ defmodule ExPdfium do
           {:ok, non_neg_integer()} | {:error, :document_closed | :lock_poisoned}
   def page_count(%Document{ref: ref}), do: Native.document_page_count(ref)
 
+  @doc group: :rendering
   @doc """
   Render a 0-indexed page to an `ExPdfium.Bitmap` (an uncompressed 4-channel
   pixel buffer).
@@ -138,6 +142,7 @@ defmodule ExPdfium do
           top: float()
         }
 
+  @doc group: :text
   @doc """
   Extract the plain text of a 0-indexed page.
 
@@ -149,6 +154,7 @@ defmodule ExPdfium do
   def extract_text(%Document{ref: ref}, page_index),
     do: Native.document_extract_text(ref, page_index)
 
+  @doc group: :text
   @doc """
   Extract the plain text of the whole document. Pages are joined by a form-feed
   (`"\\f"`) character. Returns `{:error, :document_closed}` if the document has
@@ -157,6 +163,7 @@ defmodule ExPdfium do
   @spec extract_text(Document.t()) :: {:ok, String.t()} | {:error, atom()}
   def extract_text(%Document{ref: ref}), do: Native.document_extract_text_all(ref)
 
+  @doc group: :text
   @doc """
   Return the page's text as runs (segments), each with its bounding box.
 
@@ -175,6 +182,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :text
   @doc """
   Search a page for `query`, returning the matches.
 
@@ -208,6 +216,7 @@ defmodule ExPdfium do
   @metadata_keys ~w(title author subject keywords creator producer creation_date
                     modification_date)a
 
+  @doc group: :metadata
   @doc """
   Return the document's info-dictionary metadata as a map.
 
@@ -233,6 +242,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :metadata
   @doc """
   Geometry of a 0-indexed page: size (points), rotation (degrees), label, and the
   boundary boxes.
@@ -273,6 +283,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :metadata
   @doc """
   Return the document's permission flags as a map of booleans.
 
@@ -292,6 +303,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :structure
   @doc """
   Return the document outline (bookmarks) as a nested tree.
 
@@ -306,6 +318,7 @@ defmodule ExPdfium do
   @spec outline(Document.t()) :: {:ok, [map()]} | {:error, atom()}
   def outline(%Document{ref: ref}), do: Native.document_outline(ref)
 
+  @doc group: :structure
   @doc """
   Return the links on a 0-indexed page.
 
@@ -330,6 +343,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :structure
   @doc """
   List the document's embedded files.
 
@@ -352,6 +366,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :structure
   @doc """
   Extract the bytes of the embedded file at `index` (see `attachments/1`).
 
@@ -363,6 +378,7 @@ defmodule ExPdfium do
   def attachment_data(%Document{ref: ref}, index),
     do: Native.document_attachment_data(ref, index)
 
+  @doc group: :forms
   @doc """
   Return which interactive-form technology the document uses.
 
@@ -378,6 +394,7 @@ defmodule ExPdfium do
           {:ok, :none | :acrobat | :xfa_full | :xfa_foreground} | {:error, atom()}
   def form_type(%Document{ref: ref}), do: Native.document_form_type(ref)
 
+  @doc group: :forms
   @doc """
   Read the document's AcroForm fields, one entry per widget, across all pages.
 
@@ -437,6 +454,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :forms
   @doc """
   Return the annotations on a 0-indexed page, in page order.
 
@@ -477,6 +495,7 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :documents
   @doc """
   Explicitly close a document, releasing pdfium memory early. Optional and
   idempotent.
