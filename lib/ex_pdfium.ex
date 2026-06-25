@@ -216,6 +216,12 @@ defmodule ExPdfium do
   PDF `cm` transform `[a b c d e f]`. A point `(x, y)` in the object's own space
   maps to `(a·x + c·y + e, b·x + d·y + f)` on the page.
 
+  These are **PDF coordinates** — origin bottom-left, `y` increasing **up** — so a
+  positive `atan2(b, a)` is a *counter-clockwise* rotation. Top-left-origin raster
+  libraries (Vix/libvips, Pillow, ImageMagick) are `y`-down, where the same angle
+  rotates the other way; negate it (or `y`-flip the image) before applying. See
+  `object_display_rotation/3` for the rotation already in raster convention.
+
   For an image object the matrix maps the unit square `[0,1]×[0,1]` onto the
   placement, so `a`/`d` carry scale, `b`/`c` shear/rotation, and `e`/`f` the
   translation.
@@ -795,8 +801,18 @@ defmodule ExPdfium do
 
   This library deliberately does **not** rotate pixels for you (that is image
   processing best left to your image pipeline); it hands you the transform as data.
-  Apply it in `Vix`/`Image`, or read the rotation off it (e.g. via `:b`/`:c`) to
-  pass an orientation hint to your OCR engine.
+  Apply it in `Vix`/`Image`, or read the rotation off it to pass an orientation
+  hint to your OCR engine.
+
+  > #### This matrix is PDF y-up — raster libraries are y-down {: .warning}
+  > These values are in PDF space: origin **bottom-left**, `y` increasing **up**, so
+  > a positive `atan2(b, a)` is a *counter-clockwise* angle. Raster libraries
+  > (Vix/libvips, Pillow, ImageMagick) put the origin **top-left** with `y` going
+  > **down**, where the same numeric angle rotates the *opposite* way. Deriving an
+  > angle here and applying it directly turns 90°/270° pages 180° the wrong way
+  > (it cancels at 0°/180°, so it looks fine on unrotated docs). Negate the angle
+  > (or flip the image in `y`) first — or just call `object_display_rotation/3`,
+  > which returns the clockwise degrees already in raster convention.
 
   Returns `{:error, :object_not_found}` if there is no such object, or
   `{:error, :no_matrix}` if pdfium could not report the object's matrix.
@@ -816,6 +832,44 @@ defmodule ExPdfium do
         nil -> {:error, :no_matrix}
         m -> {:ok, compose_display_matrix(m, info)}
       end
+    end
+  end
+
+  @doc group: :extraction
+  @doc """
+  The clockwise rotation, in degrees, to apply to an extracted image in a
+  **top-left-origin raster library** (Vix/libvips, Pillow, ImageMagick) so it
+  appears upright, as the page displays it.
+
+  This is the raster-convention companion to `object_display_matrix/3`. That
+  matrix is in PDF space (origin bottom-left, `y` up); raster libraries put the
+  origin top-left with `y` increasing downward, which **inverts the rotation
+  sense**. So an angle read straight off the PDF matrix (`atan2(b, a)`) and handed
+  to a raster library comes out 180° wrong on 90°/270° pages — and, because it
+  cancels at 0°/180°, passes casual testing on unrotated documents. This function
+  returns the already-converted clockwise angle, normalized to `[0, 360)`.
+
+      {:ok, raw} = ExPdfium.image_raw_data(doc, 0, 0)
+      {:ok, deg} = ExPdfium.object_display_rotation(doc, 0, 0)
+      {:ok, img} = Image.from_binary(raw)
+      {:ok, upright} = Image.rotate(img, deg)   # Vips is clockwise; upright as on the page
+
+  For a plain scanned page — a single full-page image, rotated only by the page
+  `/Rotate` — this equals `page_info/2`'s `:rotation`. It captures **rotation
+  only**: any flip or skew carried in the object matrix is not reducible to an
+  angle, so use `object_display_matrix/3` for the full transform in that case.
+
+  Returns `{:error, :object_not_found}` or `{:error, :no_matrix}` exactly as
+  `object_display_matrix/3` does.
+  """
+  @spec object_display_rotation(Document.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, float()} | {:error, atom()}
+  def object_display_rotation(%Document{} = doc, page_index, object_index) do
+    with {:ok, m} <- object_display_matrix(doc, page_index, object_index) do
+      # PDF space is y-up (positive angle = counter-clockwise); raster space is
+      # y-down (positive = clockwise). Negate the matrix-derived angle to convert.
+      deg = -:math.atan2(m.b, m.a) * 180.0 / :math.pi()
+      {:ok, normalize_degrees(deg)}
     end
   end
 
@@ -1361,6 +1415,12 @@ defmodule ExPdfium do
 
   defp map_to_mat(%{a: a, b: b, c: c, d: d, e: e, f: f}), do: {a, b, c, d, e, f}
   defp mat_to_map({a, b, c, d, e, f}), do: %{a: a, b: b, c: c, d: d, e: e, f: f}
+
+  # Wrap a degree value into [0, 360).
+  defp normalize_degrees(deg) do
+    r = :math.fmod(deg, 360.0)
+    if r < 0.0, do: r + 360.0, else: r
+  end
 
   # Multiply two PDF matrices in the row-vector convention: result = A · B, so a
   # point transformed by the result is `(p · A) · B`.

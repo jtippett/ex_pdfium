@@ -164,15 +164,26 @@ scanned page bound for OCR — it must be composed with the page-level `/Rotate`
 (which the content-space matrix does not carry):
 
 ```elixir
-# The composed content→display transform, ready to orient an extracted image:
+# The composed content→display transform (PDF y-up space):
 {:ok, m} = ExPdfium.object_display_matrix(doc, 0, 2)
 # => %{a: ..., b: ..., c: ..., d: ..., e: ..., f: ...}
+
+# …or, for a top-left-origin raster library, the clockwise rotation it wants:
+{:ok, raw} = ExPdfium.image_raw_data(doc, 0, 2)
+{:ok, deg} = ExPdfium.object_display_rotation(doc, 0, 2)   # e.g. 270.0
+{:ok, img} = Image.from_binary(raw)
+{:ok, upright} = Image.rotate(img, deg)                    # Vips clockwise; upright as displayed
 ```
 
 ExPdfium hands you the transform as **data** — it doesn't rotate pixels for you
-(that belongs in your image pipeline, e.g. Vix). If you'd rather compose it
-yourself, `page_info/2`'s `:rotation` is the page `/Rotate`, and its
-`:width`/`:height` are already display-oriented (a different frame from the matrix).
+(that belongs in your image pipeline, e.g. Vix).
+
+> **Handedness:** the matrix is PDF space (origin bottom-left, *y*-up). Raster
+> libraries (Vix/libvips, Pillow, ImageMagick) are *y*-down, which inverts the
+> rotation sense — an angle read off the matrix and applied directly is 180° wrong
+> on 90°/270° pages (and looks fine on unrotated ones). Use
+> `object_display_rotation/3`, which returns the clockwise degrees already in
+> raster convention, or negate the matrix angle yourself.
 
 ### Writing — page assembly
 

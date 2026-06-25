@@ -7,6 +7,21 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Added
+- **`ExPdfium.object_display_rotation/3`** (read): the clockwise rotation in
+  degrees to apply to an extracted image in a **top-left-origin raster library**
+  (Vix/libvips, Pillow, ImageMagick) so it appears upright as displayed —
+  `object_display_matrix/3`'s rotation already converted out of PDF's y-up frame.
+  For a plain scanned page it equals `page_info/2`'s `:rotation`.
+
+### Changed
+- **Documented the y-up vs y-down handedness trap** on `object_display_matrix/3`
+  and `t:ExPdfium.matrix/0`: the matrix is PDF space (origin bottom-left, `y` up),
+  so a rotation angle read from it and applied directly in a y-down raster library
+  comes out 180° wrong on 90°/270° pages (it cancels at 0°/180°, so it looks fine
+  on unrotated docs). Negate the angle, `y`-flip the image, or use
+  `object_display_rotation/3`.
+
 ## 0.3.2 - 2026-06-25
 
 ### Added

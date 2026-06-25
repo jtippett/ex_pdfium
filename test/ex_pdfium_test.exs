@@ -915,6 +915,23 @@ defmodule ExPdfiumTest do
       assert {:error, :object_not_found} = ExPdfium.object_display_matrix(doc, 0, 999)
       assert {:error, :page_out_of_bounds} = ExPdfium.object_display_matrix(doc, 9, 0)
     end
+
+    test "object_display_rotation/3 returns clockwise raster degrees (= page /Rotate here)" do
+      # The image has no object-level rotation, so the display rotation is purely
+      # the page /Rotate — and in raster (top-left, clockwise) convention that is
+      # the page rotation value itself.
+      for rot <- [0, 90, 180, 270] do
+        {doc, img} = red_image_doc()
+        {:ok, doc} = ExPdfium.rotate_page(doc, 0, rot)
+        {:ok, deg} = ExPdfium.object_display_rotation(doc, 0, img.index)
+        assert_in_delta deg, rot, 0.01, "raster rotation should equal /Rotate #{rot}"
+      end
+    end
+
+    test "object_display_rotation/3 propagates errors" do
+      {doc, _img} = red_image_doc()
+      assert {:error, :object_not_found} = ExPdfium.object_display_rotation(doc, 0, 999)
+    end
   end
 
   describe "Reading: image_data/3 (decoded pixels)" do
