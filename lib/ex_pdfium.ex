@@ -218,8 +218,16 @@ defmodule ExPdfium do
 
   For an image object the matrix maps the unit square `[0,1]×[0,1]` onto the
   placement, so `a`/`d` carry scale, `b`/`c` shear/rotation, and `e`/`f` the
-  translation — enough to recover the on-page scale, rotation, and flip
-  deterministically.
+  translation.
+
+  > #### Content space, not display space {: .info}
+  > This matrix lives in the page's **unrotated content coordinate space**. It does
+  > **not** include the page-level `/Rotate` (the dominant rotation for scanned
+  > documents). `page_info/2` reports that separately as `:rotation` (0/90/180/270),
+  > and its `:width`/`:height` are already display-oriented — a different frame from
+  > this matrix. To get an object's **as-displayed** orientation, compose this matrix
+  > with the page rotation; the matrix alone recovers only the transform baked into
+  > the object itself.
   """
   @type matrix :: %{
           a: float(),
@@ -681,9 +689,17 @@ defmodule ExPdfium do
   ready JPEG; `"FlateDecode"` is zlib-compressed samples, not a standalone file).
 
   `matrix` is the image's placement transform (see `t:matrix/0`). Because it maps
-  the unit square onto the page, a caller can recover the image's on-page scale,
-  rotation, and flip deterministically — e.g. to orient an extracted
-  `image_raw_data/3` stream correctly without re-rendering the page.
+  the unit square onto the page, a caller can recover the transform baked into the
+  image object — scale, plus any object-level rotation or flip — without
+  re-rendering.
+
+  > #### Orientation needs the page rotation too {: .warning}
+  > The matrix is in **content space** and does not carry the page-level `/Rotate`,
+  > which is the usual rotation for scanned pages. For the **as-displayed**
+  > orientation, compose this matrix with `page_info/2`'s `:rotation`. (Note also
+  > that `page_info/2`'s `:width`/`:height` are already display-oriented, a
+  > different frame from this matrix — easy to conflate.) Using the object matrix
+  > alone will leave a `/Rotate`-rotated scan turned the wrong way.
   """
   @spec images(Document.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, atom()}
   def images(%Document{ref: ref}, page_index) do

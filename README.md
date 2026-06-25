@@ -156,10 +156,13 @@ buffer (`width * height * 4` bytes).
 {:ok, jpg} = ExPdfium.image_raw_data(doc, 0, 2)
 ```
 
-The `:matrix` on each object/image is its `[a b c d e f]` transform. For an image
-it maps the unit square onto the page, so you can recover on-page scale, rotation,
-and flip deterministically — handy to orient an extracted `image_raw_data/3` stream
-(e.g. a scanned page bound for OCR) without re-rendering.
+The `:matrix` on each object/image is its `[a b c d e f]` transform, in the page's
+**unrotated content space**. For an image it maps the unit square onto the page, so
+you can recover the transform baked into the object (scale, plus any object-level
+rotation/flip) without re-rendering. For the **as-displayed** orientation — e.g. a
+scanned page bound for OCR — compose it with `page_info/2`'s `:rotation`, which
+carries the page-level `/Rotate` the matrix does not. (`page_info/2`'s
+`:width`/`:height` are already display-oriented — a different frame from the matrix.)
 
 ### Writing — page assembly
 

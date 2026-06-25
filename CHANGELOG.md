@@ -7,16 +7,25 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Changed
+- **Clarified the `:matrix` orientation story** on `page_objects/2`, `images/2`,
+  and `t:ExPdfium.matrix/0`: the matrix is in the page's **unrotated content
+  space** and does **not** carry the page-level `/Rotate` (the usual rotation for
+  scanned pages). For the as-displayed orientation, compose it with
+  `page_info/2`'s `:rotation` — whose `:width`/`:height` are already
+  display-oriented, a different coordinate frame. Docs only; no API change.
+
 ## 0.3.1 - 2026-06-25
 
 ### Added
 - **Object transformation matrix** (read): `page_objects/2` and `images/2` now
   include a `:matrix` key — the object's `[a b c d e f]` transform as
   `t:ExPdfium.matrix/0` (`%{a:, b:, c:, d:, e:, f:}`), or `nil` if pdfium can't
-  report it. For an image it maps the unit square onto the page, so a caller can
-  recover on-page scale, rotation, and flip deterministically — e.g. to orient an
-  extracted `image_raw_data/3` stream correctly without re-rendering. Additive and
-  backwards-compatible.
+  report it. It maps an image's unit square onto the page in content space, so a
+  caller can recover the transform baked into the object (scale, plus any
+  object-level rotation/flip) without re-rendering. (Note: this is content space,
+  not display space — compose with `page_info/2`'s `:rotation` for the page-level
+  `/Rotate`; see the 0.3.2 doc clarification.) Additive and backwards-compatible.
 
 ## 0.3.0 - 2026-06-25
 
