@@ -1659,6 +1659,14 @@ fn document_append(
         let src_guard = src.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let dest_doc = dest_guard.as_mut().ok_or_else(atoms::document_closed)?;
         let src_doc = src_guard.as_ref().ok_or_else(atoms::document_closed)?;
+        // Page indices are u16 in pdfium-render; refuse a merge that would exceed
+        // that ceiling rather than overflow the page-index cache (u32 sum avoids
+        // overflowing the check itself).
+        if u32::from(dest_doc.pages().len()) + u32::from(src_doc.pages().len())
+            > u32::from(u16::MAX)
+        {
+            return Err(atoms::page_out_of_bounds());
+        }
         dest_doc
             .pages_mut()
             .append(src_doc)
@@ -1917,6 +1925,10 @@ fn document_add_page(
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        // u16 page-index ceiling: refuse to add a page to an already-full document.
+        if document.pages().len() == u16::MAX {
+            return Err(atoms::page_out_of_bounds());
+        }
         let size = PdfPagePaperSize::from_points(
             PdfPoints::new(width as f32),
             PdfPoints::new(height as f32),

@@ -15,6 +15,17 @@ defmodule ExPdfium do
   > `draw_circle`/`draw_image`; and `save_to_bytes/1` / `save_to_file/2`.
   > Form-filling and annotation authoring are arriving in later 0.3.x releases.
 
+  > #### Untrusted input {: .warning}
+  > pdfium runs **in-process** as a native library, so a genuine crash in it would
+  > take down the BEAM VM (a Rust panic is contained; a native fault is not).
+  > ExPdfium validates and bounds caller arguments and capped page-render/image
+  > decode sizes, but **extraction returns data proportional to the document's
+  > content** — a large (or maliciously compressed) embedded file, image, or
+  > signature blob allocates memory proportional to its decoded size. When
+  > processing **untrusted PDFs at scale**, run that work behind OS memory limits
+  > and/or in an isolated, supervised OS process (e.g. a dedicated, restartable
+  > node) rather than relying on per-call caps.
+
   ## Example
 
       {:ok, doc} = ExPdfium.open("file.pdf")
