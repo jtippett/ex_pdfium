@@ -183,10 +183,23 @@ ranges→`:bad_range`. Gotchas: pdfium-render's `delete_page_range` is DEPRECATE
 `{:ok,:ok}` (the `wrap/2` helper maps it). Moduledoc/README/PORTING reframed
 read→read+write.
 
-**Remaining v0.3.x write phases (each gated by an explicit go-ahead):** form-filling
-(set text/checkbox/radio; appearance-regeneration gotcha), annotation authoring
-(create/edit/delete), new-document creation + content drawing. Then a Hex release —
-publish still needs a fresh go-ahead.
+### Image & object extraction (read) DONE
+Commit 5523936, CI green, 109 tests. `page_objects/2` (typed objects + bounds +
+index), `images/2` (image objects: width/height/bits_per_pixel/filters/bounds),
+`image_data/3` (decoded pixels → `%Bitmap{}` in native `:gray|:bgr|:bgrx|:bgra`),
+`image_raw_data/3` (original encoded stream — DCTDecode → ready JPEG). `Bitmap.format`
+widened (render still `:rgba`/`:bgra`). Key facts: `obj.bounds()` is `PdfQuadPoints`
+→ `.to_rect()`; `as_image_object()` borrow must be inlined (E0515); `image_data`
+uses `get_raw_bitmap` (raw samples, masks/transforms NOT applied — documented) vs
+`images/2`'s processed dims; call `bitmap.format()` before `as_raw_bytes()` (null-
+handle guard). Multi-image fixture (`images_gen.py`): RGB+gray FlateDecode + a real
+base64-embedded DCTDecode JPEG (ImageMagick-made once); deterministic.
+
+**Remaining roadmap (each gated by an explicit go-ahead):** the user steers by value
+— form-filling is explicitly NOT a priority. Candidates surfaced: render refinements
+(clip/grayscale/thumbnails/n-up), flatten, signatures (read); write-track phases
+(annotation authoring, new-doc creation). v0.3 work (page assembly + image extraction)
+is all on main, unreleased — a 0.3.0 Hex release still needs a fresh go-ahead to tag/publish.
 
 ### Latent note (still open, low priority)
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
