@@ -82,7 +82,8 @@ uncompressed 4-channel buffer (`width * height * 4` bytes).
 
 ```elixir
 {:ok, meta} = ExPdfium.metadata(doc)
-# => %{title: "…", author: "…", creation_date: "D:…", producer: "…", ...}
+# => %{title: "…", author: "…", creation_date: "D:…", producer: "…",
+#      version: "1.7", page_count: 12, page_mode: :none, ...}  # /Info + doc properties
 
 {:ok, info} = ExPdfium.page_info(doc, 0)
 # => %{width: 612.0, height: 792.0, rotation: 0, label: nil,

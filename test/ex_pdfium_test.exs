@@ -416,11 +416,40 @@ defmodule ExPdfiumTest do
       assert meta.modification_date == nil
     end
 
-    test "a document with no info dict yields all-nil fields" do
+    test "metadata/1 includes document-level properties" do
+      {:ok, doc} = ExPdfium.open(@meta)
+      {:ok, count} = ExPdfium.page_count(doc)
+      assert {:ok, meta} = ExPdfium.metadata(doc)
+
+      # PDF version is a "MAJOR.MINOR" string (or nil if the file omits it).
+      assert is_nil(meta.version) or meta.version =~ ~r/^\d\.\d$/
+      assert meta.page_count == count
+
+      assert meta.page_mode in [
+               :none,
+               :outline,
+               :thumbnails,
+               :fullscreen,
+               :optional_content,
+               :attachments,
+               :unset
+             ]
+    end
+
+    test "version is reported for a fixture that declares one" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, %{version: version}} = ExPdfium.metadata(doc)
+      assert version =~ ~r/^1\.\d$/
+    end
+
+    test "a document with no info dict yields all-nil fields but real properties" do
       {:ok, doc} = ExPdfium.open(@sample)
       assert {:ok, meta} = ExPdfium.metadata(doc)
       assert meta.title == nil
       assert meta.author == nil
+      # Document-level properties are still present.
+      assert meta.page_count == 2
+      assert is_atom(meta.page_mode)
     end
 
     test "metadata on a closed document" do

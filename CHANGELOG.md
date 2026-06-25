@@ -8,6 +8,12 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **Comprehensive document metadata**: `ExPdfium.metadata/1` now also returns
+  document-level properties alongside the `/Info` dictionary — `:version` (the PDF
+  version, e.g. `"1.7"`, or `nil`), `:page_count`, and `:page_mode` (the catalog
+  `/PageMode`: `:none` / `:outline` / `:thumbnails` / `:fullscreen` /
+  `:optional_content` / `:attachments` / `:unset`). (Custom `/Info` keys and XMP
+  metadata remain out of reach — pdfium exposes no API for either.)
 - **Image & object extraction** (read):
   - `ExPdfium.page_objects/2` → every object on a page, typed (`:text` / `:path` /
     `:image` / `:shading` / `:form` / `:unsupported`) with bounds and an index.

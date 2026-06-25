@@ -76,6 +76,13 @@ mod atoms {
         producer,
         creation_date,
         modification_date,
+        // document-level properties: page mode (:none reuses the existing atom)
+        outline,
+        thumbnails,
+        fullscreen,
+        optional_content,
+        attachments,
+        unset,
         // permission keys
         print_high_quality,
         print_low_quality,
@@ -806,10 +813,48 @@ fn document_search_text(
 
 // ── Metadata, geometry & permissions ─────────────────────────────────────────
 
-/// Phase 4: document info dictionary. Returns only the tags that are present, as
-/// `(key, value)` pairs; the Elixir side fills absent keys with nil.
+// PDF version string ("1.7", "2.0"), or None if the file declares none.
+fn version_string(v: PdfDocumentVersion) -> Option<String> {
+    let s = match v {
+        PdfDocumentVersion::Pdf1_0 => "1.0",
+        PdfDocumentVersion::Pdf1_1 => "1.1",
+        PdfDocumentVersion::Pdf1_2 => "1.2",
+        PdfDocumentVersion::Pdf1_3 => "1.3",
+        PdfDocumentVersion::Pdf1_4 => "1.4",
+        PdfDocumentVersion::Pdf1_5 => "1.5",
+        PdfDocumentVersion::Pdf1_6 => "1.6",
+        PdfDocumentVersion::Pdf1_7 => "1.7",
+        PdfDocumentVersion::Pdf2_0 => "2.0",
+        // A two-digit raw version pdfium-render doesn't have a named variant for
+        // (e.g. 21 -> "2.1"); format it so future versions still come through.
+        PdfDocumentVersion::Other(v) if v > 0 => return Some(format!("{}.{}", v / 10, v % 10)),
+        PdfDocumentVersion::Other(_) | PdfDocumentVersion::Unset => return None,
+    };
+    Some(s.to_string())
+}
+
+// How the document asks viewers to present it on open (the catalog /PageMode).
+fn page_mode_atom(m: PdfPageMode) -> Atom {
+    match m {
+        PdfPageMode::None => atoms::none(),
+        PdfPageMode::ShowDocumentOutline => atoms::outline(),
+        PdfPageMode::ShowPageThumbnails => atoms::thumbnails(),
+        PdfPageMode::Fullscreen => atoms::fullscreen(),
+        PdfPageMode::ShowContentGroupPanel => atoms::optional_content(),
+        PdfPageMode::ShowAttachmentsPanel => atoms::attachments(),
+        PdfPageMode::UnsetOrUnknown => atoms::unset(),
+    }
+}
+
+// (info-dict pairs, version, page_count, page_mode). The info pairs hold only the
+// /Info tags that are present (Elixir fills absent ones with nil); version /
+// page_count / page_mode are always-present document-level properties.
+type DocumentMetadata = (Vec<(Atom, String)>, Option<String>, u32, Atom);
+
+/// Phase 4 (+ comprehensive doc properties): the /Info dictionary plus the PDF
+/// version, page count, and page mode.
 #[rustler::nif(schedule = "DirtyCpu")]
-fn document_metadata(doc: ResourceArc<DocumentResource>) -> Result<Vec<(Atom, String)>, Atom> {
+fn document_metadata(doc: ResourceArc<DocumentResource>) -> Result<DocumentMetadata, Atom> {
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -836,7 +881,11 @@ fn document_metadata(doc: ResourceArc<DocumentResource>) -> Result<Vec<(Atom, St
                 pairs.push((key, t.value().to_string()));
             }
         }
-        Ok(pairs)
+
+        let version = version_string(document.version());
+        let page_count = u32::from(document.pages().len());
+        let page_mode = page_mode_atom(document.pages().page_mode());
+        Ok((pairs, version, page_count, page_mode))
     })
 }
 

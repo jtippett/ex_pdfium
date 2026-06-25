@@ -221,24 +221,42 @@ defmodule ExPdfium do
 
   @doc group: :metadata
   @doc """
-  Return the document's info-dictionary metadata as a map.
+  Return the document's metadata: the `/Info` dictionary plus document-level
+  properties, as one map.
 
-  Every key is present; absent fields are `nil`. Date fields (`:creation_date`,
-  `:modification_date`) are raw PDF date strings (e.g. `"D:20240115120000Z"`).
+      %{
+        # /Info dictionary — each key always present, absent fields nil
+        title: "…", author: "…", subject: nil, keywords: nil,
+        creator: "…", producer: "…",
+        creation_date: "D:20240115120000Z",  # raw PDF date string
+        modification_date: nil,
+        # document-level properties — always present
+        version: "1.7",                       # PDF version, or nil if undeclared
+        page_count: 12,
+        page_mode: :none                      # how viewers should open it (below)
+      }
+
+  `:page_mode` is the catalog `/PageMode`: `:none`, `:outline` (show bookmarks),
+  `:thumbnails`, `:fullscreen`, `:optional_content` (layers panel),
+  `:attachments`, or `:unset`.
+
+  > #### Limits of pdfium's metadata {: .info}
+  > These are the only metadata pdfium exposes. Two things are **not** reachable
+  > through it: custom/non-standard `/Info` keys (pdfium can't enumerate dictionary
+  > keys, and only the eight standard ones are queryable), and **XMP** metadata
+  > (the `/Metadata` XML stream) — pdfium has no XMP API.
 
   > #### `:modification_date` caveat {: .warning}
   > pdfium-render reads this from a `"ModificationDate"` tag rather than the
   > PDF-standard `/ModDate` key, so it is `nil` for most real-world documents.
-
-      %{title: "…", author: "…", subject: nil, keywords: nil, creator: "…",
-        producer: "…", creation_date: "D:…", modification_date: nil}
   """
-  @spec metadata(Document.t()) :: {:ok, %{atom() => String.t() | nil}} | {:error, atom()}
+  @spec metadata(Document.t()) :: {:ok, map()} | {:error, atom()}
   def metadata(%Document{ref: ref}) do
     case Native.document_metadata(ref) do
-      {:ok, pairs} ->
-        base = Map.new(@metadata_keys, &{&1, nil})
-        {:ok, Enum.into(pairs, base)}
+      {:ok, {pairs, version, page_count, page_mode}} ->
+        info = Enum.into(pairs, Map.new(@metadata_keys, &{&1, nil}))
+
+        {:ok, Map.merge(info, %{version: version, page_count: page_count, page_mode: page_mode})}
 
       {:error, _} = err ->
         err
