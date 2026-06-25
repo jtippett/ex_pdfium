@@ -11,6 +11,7 @@ defmodule ExPdfiumTest do
   @structure Path.join(@fixtures, "structure.pdf")
   @forms Path.join(@fixtures, "forms.pdf")
   @images Path.join(@fixtures, "images.pdf")
+  @huge_page Path.join(@fixtures, "huge_page.pdf")
 
   describe "Phase 0: the NIF loads and pdfium initializes" do
     test "pdfium_version/0 returns a string" do
@@ -946,6 +947,15 @@ defmodule ExPdfiumTest do
       assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, dpi: 1.0e9)
       assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, scale: 1000)
     end
+
+    test "a hostile huge-MediaBox page is bounded, not OOM (no VM crash)" do
+      # huge_page.pdf has a 40000x40000 MediaBox; the output-area check rejects it
+      # before pdfium allocates a multi-GB bitmap.
+      {:ok, doc} = ExPdfium.open(@huge_page)
+      assert {:error, :render_failed} = ExPdfium.render_page(doc, 0)
+      # The VM is fine and the document is still usable.
+      assert {:ok, 1} = ExPdfium.page_count(doc)
+    end
   end
 
   describe "Rendering: thumbnails/2" do
@@ -1267,6 +1277,22 @@ defmodule ExPdfiumTest do
       assert {:error, :bad_image_data} =
                ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 10, top: 10})
     end
+
+    test "absurd image dimensions are rejected (no overflow, no huge allocation)" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      bmp = %ExPdfium.Bitmap{
+        data: <<>>,
+        width: 100_000,
+        height: 100_000,
+        stride: 0,
+        format: :rgba
+      }
+
+      assert {:error, :bad_image_data} =
+               ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 10, top: 10})
+    end
   end
 
   describe "Creating: concurrency" do
@@ -1373,6 +1399,13 @@ defmodule ExPdfiumTest do
     test "an out-of-range index is rejected before any copying" do
       {:ok, src} = ExPdfium.open(@text)
       assert {:error, :page_out_of_bounds} = ExPdfium.extract_pages(src, [0, 9])
+    end
+
+    test "a selection larger than the max page count is rejected up front" do
+      {:ok, src} = ExPdfium.open(@text)
+
+      assert {:error, :page_out_of_bounds} =
+               ExPdfium.extract_pages(src, List.duplicate(0, 70_000))
     end
 
     test "an empty selection is rejected" do

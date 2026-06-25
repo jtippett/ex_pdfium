@@ -670,7 +670,9 @@ defmodule ExPdfium do
   `render_page/3` instead.
 
   Errors: `:object_not_found` (no object at that index), `:not_an_image` (the
-  object isn't an image), `:page_out_of_bounds`, `:image_failed`.
+  object isn't an image), `:image_too_large` (the image's declared pixel count
+  exceeds a safety cap, so it isn't decoded), `:page_out_of_bounds`,
+  `:image_failed`.
   """
   @spec image_data(Document.t(), non_neg_integer(), non_neg_integer()) ::
           {:ok, Bitmap.t()} | {:error, atom()}

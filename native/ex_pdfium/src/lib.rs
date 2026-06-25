@@ -153,6 +153,7 @@ mod atoms {
         not_an_image,
         object_not_found,
         image_failed,
+        image_too_large,
         // write: page assembly & save
         same_document,
         empty_selection,
@@ -507,6 +508,11 @@ const MAX_RENDER_DIMENSION: i32 = 30_000;
 const MAX_RENDER_DPI: f64 = 3_000.0;
 const MAX_RENDER_SCALE: f64 = 100.0;
 
+// Cap the pixel count of any bitmap pdfium allocates in-process — a render output,
+// a decoded image (image_data/3) — so a hostile page (huge MediaBox) or malformed
+// image XObject can't drive a multi-GB allocation. 100 MP RGBA is ~400 MB.
+const MAX_BITMAP_PIXELS: i64 = 100_000_000;
+
 impl Sizing {
     fn is_positive(&self) -> bool {
         match self {
@@ -630,10 +636,16 @@ impl RenderOpts {
             config = config.set_clear_color(PdfColor::new(0, 0, 0, 0));
         }
 
+        // Cap the FINAL bitmap dimensions too: requested sizing is bounded above,
+        // but pdfium otherwise derives the output size from the page's MediaBox /
+        // aspect ratio, so a hostile page (e.g. a 40000x40000 MediaBox) could still
+        // drive a huge allocation. set_maximum_* scales the output down to fit.
         config
             .use_grayscale_rendering(self.grayscale)
             .render_annotations(self.annotations)
             .render_form_data(self.form_fields)
+            .set_maximum_width(MAX_RENDER_DIMENSION)
+            .set_maximum_height(MAX_RENDER_DIMENSION)
     }
 
     fn format_atom(&self) -> Atom {
@@ -641,6 +653,41 @@ impl RenderOpts {
             Format::Rgba => atoms::rgba(),
             Format::Bgra => atoms::bgra(),
         }
+    }
+
+    // Estimate the output bitmap's pixel area for a page of the given size (in
+    // points), so we can reject an oversized render BEFORE pdfium allocates the
+    // bitmap (a hostile MediaBox or aspect ratio can otherwise derive a huge size,
+    // which on an overcommit system could OOM the whole VM). Mirrors `to_config`'s
+    // sizing; `set_maximum_*` there is a backstop for any estimation error.
+    fn estimated_pixels(&self, page_w: f64, page_h: f64) -> f64 {
+        let (w, h) = match &self.sizing {
+            Sizing::Dpi(d) => (page_w * d / 72.0, page_h * d / 72.0),
+            Sizing::Scale(s) => (page_w * s, page_h * s),
+            Sizing::Size {
+                width: Some(w),
+                height: Some(h),
+            } => (f64::from(*w), f64::from(*h)),
+            Sizing::Size {
+                width: Some(w),
+                height: None,
+            } => {
+                let ratio = if page_w > 0.0 { page_h / page_w } else { 1.0 };
+                (f64::from(*w), f64::from(*w) * ratio)
+            }
+            Sizing::Size {
+                width: None,
+                height: Some(h),
+            } => {
+                let ratio = if page_h > 0.0 { page_w / page_h } else { 1.0 };
+                (f64::from(*h) * ratio, f64::from(*h))
+            }
+            Sizing::Size {
+                width: None,
+                height: None,
+            } => (page_w, page_h),
+        };
+        w.max(0.0) * h.max(0.0)
     }
 }
 
@@ -715,6 +762,14 @@ fn document_render_page<'a>(
             .pages()
             .get(index)
             .map_err(|_| atoms::page_out_of_bounds())?;
+
+        // Reject an oversized render before pdfium allocates the bitmap, so a
+        // hostile page size can't drive a multi-GB allocation in-process.
+        if render.estimated_pixels(page.width().value as f64, page.height().value as f64)
+            > MAX_BITMAP_PIXELS as f64
+        {
+            return Err(atoms::render_failed());
+        }
 
         let bitmap = page
             .render_with_config(&render.to_config())
@@ -1501,6 +1556,15 @@ fn document_image_data(
             .map_err(|_| atoms::object_not_found())?;
         let img = object.as_image_object().ok_or_else(atoms::not_an_image)?;
 
+        // Bound the decode by the image's DECLARED pixel size (cheap metadata read)
+        // before get_raw_bitmap allocates: a malformed XObject claiming e.g.
+        // 100000x100000 would otherwise make pdfium allocate a huge bitmap in-process.
+        let declared_w = i64::from(img.width().map_err(|_| atoms::image_failed())?);
+        let declared_h = i64::from(img.height().map_err(|_| atoms::image_failed())?);
+        if declared_w.max(0) * declared_h.max(0) > MAX_BITMAP_PIXELS {
+            return Err(atoms::image_too_large());
+        }
+
         let bitmap = img.get_raw_bitmap().map_err(|_| atoms::image_failed())?;
         // `get_raw_bitmap` doesn't null-check pdfium's handle; `format()` errors on
         // a null/unknown bitmap, so call it FIRST (before `as_raw_bytes()` reads the
@@ -1613,6 +1677,12 @@ fn document_extract_pages(
 ) -> Result<ResourceArc<DocumentResource>, Atom> {
     if indices.is_empty() {
         return Err(atoms::empty_selection());
+    }
+    // A PDF can hold at most u16::MAX pages, and the dest index is a u16. Reject an
+    // oversized selection up front rather than copying tens of thousands of pages
+    // into a huge partial document only to fail at the u16 conversion below.
+    if indices.len() > u16::MAX as usize {
+        return Err(atoms::page_out_of_bounds());
     }
     with_pdfium(|pdfium| {
         let src_guard = src.doc.lock().map_err(|_| atoms::lock_poisoned())?;
@@ -2024,6 +2094,12 @@ fn document_draw_image(
     let (pdf_format, swap_rb) =
         image_format(&format).ok_or_else(atoms::unsupported_image_format)?;
     if img_width == 0 || img_height == 0 {
+        return Err(atoms::bad_image_data());
+    }
+    // Cap input dimensions: keeps the size math (packed_row * height, stride *
+    // height) far from usize overflow and bounds the allocation. 30000 px per side
+    // is already enormous for a placed image.
+    if img_width > MAX_RENDER_DIMENSION as u32 || img_height > MAX_RENDER_DIMENSION as u32 {
         return Err(atoms::bad_image_data());
     }
     let packed_row = img_width as usize * bytes_per_pixel(pdf_format);
