@@ -7,7 +7,8 @@ defmodule ExPdfium do
 
   > #### A read & write toolkit {: .info}
   > **Read:** open, render, extract/search text, metadata, page geometry,
-  > permissions, structure (bookmarks/links/attachments), and forms/annotations.
+  > permissions, structure (bookmarks/links/attachments), forms/annotations, and
+  > images & page objects.
   > **Write:** page assembly — merge (`append/2`), split/subset
   > (`extract_pages/2`), `delete_pages/2`, `rotate_page/3` — and `save_to_bytes/1`
   > / `save_to_file/2`. Creating content from scratch, form-filling, and
@@ -496,6 +497,121 @@ defmodule ExPdfium do
         err
     end
   end
+
+  @doc group: :extraction
+  @doc """
+  List every object on a 0-indexed page, in page order.
+
+  Each object is `%{index: non_neg_integer(), type: atom(), bounds: t:bounds/0 |
+  nil}`, where `type` is one of `:text`, `:path`, `:image`, `:shading`, `:form`
+  (an XObject form), or `:unsupported`. `index` is the object's position in the
+  page's object list — pass it to `image_data/3` / `image_raw_data/3`. It is valid
+  only until the document is mutated (a write op can shift object indices).
+  """
+  @spec page_objects(Document.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, atom()}
+  def page_objects(%Document{ref: ref}, page_index) do
+    case Native.document_page_objects(ref, page_index) do
+      {:ok, objects} ->
+        {:ok,
+         Enum.map(objects, fn {index, type, bounds} ->
+           %{index: index, type: type, bounds: opt_rect(bounds)}
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc group: :extraction
+  @doc """
+  List the image objects on a 0-indexed page, with how each is stored.
+
+  Each is:
+
+      %{
+        index: non_neg_integer(),         # object index, for image_data/3
+        width: non_neg_integer(),         # intrinsic image width, in pixels
+        height: non_neg_integer(),        # intrinsic image height, in pixels
+        bits_per_pixel: non_neg_integer(),
+        filters: [String.t()],            # PDF stream filters, e.g. ["DCTDecode"]
+        bounds: t:bounds/0 | nil          # where it sits on the page, in points
+      }
+
+  `width`/`height` are pdfium's reported pixel dimensions (a `0` means pdfium
+  couldn't read it), and `index` is valid only until the document is mutated.
+
+  Use `image_data/3` to get decoded pixels, or `image_raw_data/3` for the original
+  encoded bytes — `filters` tells you the encoding (a `"DCTDecode"` raw stream is a
+  ready JPEG; `"FlateDecode"` is zlib-compressed samples, not a standalone file).
+  """
+  @spec images(Document.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, atom()}
+  def images(%Document{ref: ref}, page_index) do
+    case Native.document_images(ref, page_index) do
+      {:ok, images} ->
+        {:ok,
+         Enum.map(images, fn {index, width, height, bpp, filters, bounds} ->
+           %{
+             index: index,
+             width: width,
+             height: height,
+             bits_per_pixel: bpp,
+             filters: filters,
+             bounds: opt_rect(bounds)
+           }
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc group: :extraction
+  @doc """
+  Decode the image object at `object_index` (see `page_objects/2` / `images/2`) to
+  a pixel bitmap.
+
+  Returns `{:ok, %ExPdfium.Bitmap{}}`. Unlike `render_page/3` (always 4-channel),
+  an extracted image keeps its native channel order — `format` is `:gray` (1
+  channel), `:bgr` (3), or `:bgrx` / `:bgra` (4) — so check it before handing
+  `data` to an image library.
+
+  These are the image's **raw stored samples**: image masks (soft/stencil) and
+  object transforms are not applied, so a masked image comes back without its
+  transparency, and the bitmap size may differ from `images/2`'s reported
+  dimensions. For the composited, as-displayed result, render the page with
+  `render_page/3` instead.
+
+  Errors: `:object_not_found` (no object at that index), `:not_an_image` (the
+  object isn't an image), `:page_out_of_bounds`, `:image_failed`.
+  """
+  @spec image_data(Document.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, Bitmap.t()} | {:error, atom()}
+  def image_data(%Document{ref: ref}, page_index, object_index) do
+    case Native.document_image_data(ref, page_index, object_index) do
+      {:ok, {data, width, height, stride, format}} ->
+        {:ok, %Bitmap{data: data, width: width, height: height, stride: stride, format: format}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc group: :extraction
+  @doc """
+  Return the original, still-encoded stream of the image object at `object_index`.
+
+  This is the image exactly as stored, with its PDF filters **not** applied: for a
+  `"DCTDecode"` image the bytes are a ready-to-write JPEG; for `"FlateDecode"`
+  they are zlib-compressed samples, not a standalone image file. Check `filters`
+  from `images/2` to know which. For always-decodable pixels, use `image_data/3`.
+
+  Errors: `:object_not_found`, `:not_an_image`, `:page_out_of_bounds`,
+  `:image_failed`.
+  """
+  @spec image_raw_data(Document.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, binary()} | {:error, atom()}
+  def image_raw_data(%Document{ref: ref}, page_index, object_index),
+    do: Native.document_image_raw_data(ref, page_index, object_index)
 
   @doc group: :writing
   @doc """

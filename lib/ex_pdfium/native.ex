@@ -76,6 +76,16 @@ defmodule ExPdfium.Native do
   def document_form_fields(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_annotations(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
 
+  # Image & object extraction.
+  def document_page_objects(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+  def document_images(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_image_data(_doc, _page_index, _object_index),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_image_raw_data(_doc, _page_index, _object_index),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   # v0.3 — writing: page assembly & save.
   def document_save(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_append(_dest, _src), do: :erlang.nif_error(:nif_not_loaded)

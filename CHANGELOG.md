@@ -8,6 +8,17 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **Image & object extraction** (read):
+  - `ExPdfium.page_objects/2` → every object on a page, typed (`:text` / `:path` /
+    `:image` / `:shading` / `:form` / `:unsupported`) with bounds and an index.
+  - `ExPdfium.images/2` → image objects with intrinsic size, bits-per-pixel, and
+    PDF stream `filters` (e.g. `["DCTDecode"]`).
+  - `ExPdfium.image_data/3` → decoded pixels as an `%ExPdfium.Bitmap{}` (native
+    channel order: `:gray` / `:bgr` / `:bgrx` / `:bgra`).
+  - `ExPdfium.image_raw_data/3` → the original encoded stream (a `"DCTDecode"`
+    image's bytes are a ready JPEG).
+  - `ExPdfium.Bitmap`'s `format` type now also covers `:bgrx`, `:bgr`, and `:gray`
+    (image extraction); `render_page/3` still yields `:rgba`/`:bgra`.
 - **Writing — page assembly & save** (v0.3, reopening the write scope that was
   out of scope through v0.2):
   - `ExPdfium.save_to_bytes/1` and `save_to_file/2` — full save (`FPDF_SaveAsCopy`)

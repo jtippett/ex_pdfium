@@ -65,6 +65,7 @@ defmodule ExPdfium.MixProject do
         "Metadata & geometry": &(&1[:group] == :metadata),
         "Structure & navigation": &(&1[:group] == :structure),
         "Forms & annotations": &(&1[:group] == :forms),
+        "Images & objects": &(&1[:group] == :extraction),
         "Writing (page assembly)": &(&1[:group] == :writing),
         Diagnostics: &(&1[:group] == :diagnostics)
       ]

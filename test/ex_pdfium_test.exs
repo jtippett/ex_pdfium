@@ -10,6 +10,7 @@ defmodule ExPdfiumTest do
   @restricted Path.join(@fixtures, "restricted.pdf")
   @structure Path.join(@fixtures, "structure.pdf")
   @forms Path.join(@fixtures, "forms.pdf")
+  @images Path.join(@fixtures, "images.pdf")
 
   describe "Phase 0: the NIF loads and pdfium initializes" do
     test "pdfium_version/0 returns a string" do
@@ -723,6 +724,145 @@ defmodule ExPdfiumTest do
             {:ok, i} = ExPdfium.page_info(doc, 0)
             {:ok, p} = ExPdfium.permissions(doc)
             m.title == "The Great Test" and i.width == 200.0 and p.print_high_quality == true
+          end,
+          max_concurrency: 32,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
+    end
+  end
+
+  describe "Reading: page_objects/2" do
+    test "lists every object on the page, typed, with bounds" do
+      {:ok, doc} = ExPdfium.open(@images)
+      assert {:ok, objects} = ExPdfium.page_objects(doc, 0)
+
+      types = Enum.map(objects, & &1.type)
+      assert :text in types
+      assert :path in types
+      assert :image in types
+
+      # Each object reports a 0-based index and a bounds map (or nil).
+      assert Enum.all?(objects, &(is_integer(&1.index) and &1.index >= 0))
+
+      image = Enum.find(objects, &(&1.type == :image))
+      assert %{left: _, bottom: _, right: _, top: _} = image.bounds
+    end
+
+    test "out-of-bounds page and closed document" do
+      {:ok, doc} = ExPdfium.open(@images)
+      assert {:error, :page_out_of_bounds} = ExPdfium.page_objects(doc, 9)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.page_objects(doc, 0)
+    end
+  end
+
+  describe "Reading: images/2" do
+    test "lists image objects with intrinsic dimensions and filters" do
+      {:ok, doc} = ExPdfium.open(@images)
+      assert {:ok, images} = ExPdfium.images(doc, 0)
+      assert length(images) == 3
+
+      rgb = Enum.find(images, &(&1.filters == ["FlateDecode"] and &1.bits_per_pixel == 24))
+      assert rgb.width == 4
+      assert rgb.height == 4
+      assert %{left: _, bottom: _, right: _, top: _} = rgb.bounds
+      assert is_integer(rgb.index)
+
+      gray = Enum.find(images, &(&1.bits_per_pixel == 8))
+      assert gray.filters == ["FlateDecode"]
+
+      jpeg = Enum.find(images, &(&1.filters == ["DCTDecode"]))
+      assert jpeg.width == 16
+      assert jpeg.height == 12
+    end
+
+    test "a page with no images returns an empty list" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, []} = ExPdfium.images(doc, 0)
+    end
+  end
+
+  describe "Reading: image_data/3 (decoded pixels)" do
+    test "returns a decoded bitmap for an image object" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, images} = ExPdfium.images(doc, 0)
+      rgb = Enum.find(images, &(&1.filters == ["FlateDecode"] and &1.bits_per_pixel == 24))
+
+      assert {:ok, %ExPdfium.Bitmap{} = bmp} = ExPdfium.image_data(doc, 0, rgb.index)
+      assert bmp.width == 4
+      assert bmp.height == 4
+      assert bmp.format in [:gray, :bgr, :bgrx, :bgra]
+      assert byte_size(bmp.data) > 0
+      assert bmp.stride > 0
+    end
+
+    test "decodes a grayscale image to a single-channel bitmap" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, images} = ExPdfium.images(doc, 0)
+      gray = Enum.find(images, &(&1.bits_per_pixel == 8))
+
+      assert {:ok, bmp} = ExPdfium.image_data(doc, 0, gray.index)
+      assert bmp.format == :gray
+      # one byte per pixel, so the row stride equals the width
+      assert bmp.stride == bmp.width
+    end
+
+    test "a non-image object returns :not_an_image" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, objects} = ExPdfium.page_objects(doc, 0)
+      text = Enum.find(objects, &(&1.type == :text))
+      assert {:error, :not_an_image} = ExPdfium.image_data(doc, 0, text.index)
+    end
+
+    test "a bad object index returns :object_not_found" do
+      {:ok, doc} = ExPdfium.open(@images)
+      assert {:error, :object_not_found} = ExPdfium.image_data(doc, 0, 999)
+    end
+  end
+
+  describe "Reading: image_raw_data/3 (original encoded stream)" do
+    test "returns the stored, still-encoded image stream" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, images} = ExPdfium.images(doc, 0)
+      rgb = Enum.find(images, &(&1.filters == ["FlateDecode"]))
+
+      assert {:ok, raw} = ExPdfium.image_raw_data(doc, 0, rgb.index)
+      assert is_binary(raw)
+      assert byte_size(raw) > 0
+    end
+
+    test "a DCTDecode image's raw stream is a ready-to-write JPEG" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, images} = ExPdfium.images(doc, 0)
+      jpeg = Enum.find(images, &(&1.filters == ["DCTDecode"]))
+
+      assert {:ok, <<0xFF, 0xD8, _::binary>>} = ExPdfium.image_raw_data(doc, 0, jpeg.index)
+    end
+
+    test "a non-image object returns :not_an_image" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, objects} = ExPdfium.page_objects(doc, 0)
+      path = Enum.find(objects, &(&1.type == :path))
+      assert {:error, :not_an_image} = ExPdfium.image_raw_data(doc, 0, path.index)
+    end
+  end
+
+  describe "Reading: image extraction concurrency" do
+    test "page_objects/images/image_data are safe under concurrency" do
+      {:ok, doc} = ExPdfium.open(@images)
+
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn _ ->
+            {:ok, imgs} = ExPdfium.images(doc, 0)
+            {:ok, objs} = ExPdfium.page_objects(doc, 0)
+            img = Enum.find(imgs, &(&1.width == 4 and &1.bits_per_pixel == 24))
+            {:ok, %ExPdfium.Bitmap{width: 4}} = ExPdfium.image_data(doc, 0, img.index)
+            length(objs) >= 5 and length(imgs) == 3
           end,
           max_concurrency: 32,
           ordered: false

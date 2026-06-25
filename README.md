@@ -125,6 +125,27 @@ uncompressed 4-channel buffer (`width * height * 4` bytes).
 > XFA form data needs a V8-enabled pdfium build, which is not shipped; `:xfa_full`
 > documents may expose an empty or partial AcroForm view.
 
+### Images & page objects
+
+```elixir
+# What's on the page, typed, with bounds:
+{:ok, objects} = ExPdfium.page_objects(doc, 0)
+# => [%{index: 0, type: :text, bounds: %{...}},
+#     %{index: 2, type: :image, bounds: %{...}}, ...]  # :text|:path|:image|:shading|:form
+
+# The image objects, and how they're stored:
+{:ok, images} = ExPdfium.images(doc, 0)
+# => [%{index: 2, width: 800, height: 600, bits_per_pixel: 24,
+#       filters: ["DCTDecode"], bounds: %{...}}]
+
+# Decoded pixels (native channel order — Vix-ready):
+{:ok, %ExPdfium.Bitmap{data: data, width: w, height: h, format: fmt}} =
+  ExPdfium.image_data(doc, 0, 2)              # fmt: :gray | :bgr | :bgrx | :bgra
+
+# …or the original encoded stream (a DCTDecode image IS a .jpg):
+{:ok, jpg} = ExPdfium.image_raw_data(doc, 0, 2)
+```
+
 ### Writing — page assembly
 
 ```elixir

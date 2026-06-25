@@ -130,6 +130,19 @@ mod atoms {
         rich_media,
         xfa_widget,
         redacted,
+        // image & object extraction: object types (:text/:path reuse existing atoms)
+        image,
+        shading,
+        form,
+        unsupported,
+        // image bitmap formats (:bgra/:rgba reuse existing atoms)
+        gray,
+        bgr,
+        bgrx,
+        // image extraction errors
+        not_an_image,
+        object_not_found,
+        image_failed,
         // write: page assembly & save
         same_document,
         empty_selection,
@@ -1261,6 +1274,174 @@ fn document_form_fields(doc: ResourceArc<DocumentResource>) -> Result<Vec<FormFi
             }
         }
         Ok(fields)
+    })
+}
+
+// ── Image & object extraction ────────────────────────────────────────────────
+
+fn object_type_atom(t: PdfPageObjectType) -> Atom {
+    match t {
+        PdfPageObjectType::Text => atoms::text(),
+        PdfPageObjectType::Path => atoms::path(),
+        PdfPageObjectType::Image => atoms::image(),
+        PdfPageObjectType::Shading => atoms::shading(),
+        PdfPageObjectType::XObjectForm => atoms::form(),
+        PdfPageObjectType::Unsupported => atoms::unsupported(),
+    }
+}
+
+fn bitmap_format_atom(f: PdfBitmapFormat) -> Atom {
+    match f {
+        PdfBitmapFormat::Gray => atoms::gray(),
+        PdfBitmapFormat::BGR => atoms::bgr(),
+        PdfBitmapFormat::BGRx => atoms::bgrx(),
+        PdfBitmapFormat::BGRA => atoms::bgra(),
+        // pdfium only returns the four formats above; the remaining variant is a
+        // deprecated misspelled alias of BGRx. Treat anything else as BGRx.
+        _ => atoms::bgrx(),
+    }
+}
+
+// (index, type, bounds): `index` is the object's 0-based position in the page's
+// object list — pass it to image_data/3 / image_raw_data/3.
+type PageObject = (usize, Atom, Option<Rect>);
+
+/// Image & object extraction: every object on a 0-indexed page, in page order.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_page_objects(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<Vec<PageObject>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let objects = page
+            .objects()
+            .iter()
+            .enumerate()
+            .map(|(i, obj)| {
+                let bounds = obj.bounds().ok().map(|q| rect_of(&q.to_rect()));
+                (i, object_type_atom(obj.object_type()), bounds)
+            })
+            .collect();
+        Ok(objects)
+    })
+}
+
+// (index, width, height, bits_per_pixel, filters, bounds). width/height are the
+// image's intrinsic pixel size; `filters` are the PDF stream filter names.
+type ImageInfo = (usize, u32, u32, u32, Vec<String>, Option<Rect>);
+
+/// Image & object extraction: image objects on a page, with how they're stored.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_images(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<Vec<ImageInfo>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let images = page
+            .objects()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, obj)| {
+                let img = obj.as_image_object()?;
+                let width = img.width().ok().and_then(|p| u32::try_from(p).ok())?;
+                let height = img.height().ok().and_then(|p| u32::try_from(p).ok())?;
+                let bpp = img.bits_per_pixel().map(u32::from).unwrap_or(0);
+                let filters = img.filters().iter().map(|f| f.name().to_string()).collect();
+                let bounds = obj.bounds().ok().map(|q| rect_of(&q.to_rect()));
+                Some((i, width, height, bpp, filters, bounds))
+            })
+            .collect();
+        Ok(images)
+    })
+}
+
+/// Image & object extraction: decoded pixels of the image at `object_index`,
+/// as a 4-/3-/1-channel bitmap (format reports the native channel order).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_image_data(
+    env: Env<'_>,
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    object_index: u32,
+) -> Result<(Binary<'_>, u32, u32, u32, Atom), Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        // `object` is owned here so the `img` borrow stays valid for the call.
+        let object = page
+            .objects()
+            .get(object_index as usize)
+            .map_err(|_| atoms::object_not_found())?;
+        let img = object.as_image_object().ok_or_else(atoms::not_an_image)?;
+
+        let bitmap = img.get_raw_bitmap().map_err(|_| atoms::image_failed())?;
+        // `get_raw_bitmap` doesn't null-check pdfium's handle; `format()` errors on
+        // a null/unknown bitmap, so call it FIRST (before `as_raw_bytes()` reads the
+        // buffer) to fail cleanly rather than touch a null buffer. Keep this order.
+        let format = bitmap_format_atom(bitmap.format().map_err(|_| atoms::image_failed())?);
+        let width = u32::try_from(bitmap.width()).unwrap_or(0);
+        let height = u32::try_from(bitmap.height()).unwrap_or(0);
+        let bytes = bitmap.as_raw_bytes();
+        let stride = if height == 0 {
+            0
+        } else {
+            (bytes.len() / height as usize) as u32
+        };
+
+        let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
+        binary.as_mut_slice().copy_from_slice(&bytes);
+        Ok((binary.release(env), width, height, stride, format))
+    })
+}
+
+/// Image & object extraction: the original, still-encoded stream of the image at
+/// `object_index` (e.g. the raw JPEG bytes for a DCTDecode image).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_image_raw_data(
+    env: Env<'_>,
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    object_index: u32,
+) -> Result<Binary<'_>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let object = page
+            .objects()
+            .get(object_index as usize)
+            .map_err(|_| atoms::object_not_found())?;
+        let img = object.as_image_object().ok_or_else(atoms::not_an_image)?;
+
+        let bytes = img
+            .get_raw_image_data()
+            .map_err(|_| atoms::image_failed())?;
+        let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
+        binary.as_mut_slice().copy_from_slice(&bytes);
+        Ok(binary.release(env))
     })
 }
 
