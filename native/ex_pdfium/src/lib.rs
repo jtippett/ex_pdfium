@@ -1524,7 +1524,12 @@ fn document_page_objects(
             .enumerate()
             .map(|(i, obj)| {
                 let bounds = obj.bounds().ok().map(|q| rect_of(&q.to_rect()));
-                (i, object_type_atom(obj.object_type()), bounds, matrix_of(&obj))
+                (
+                    i,
+                    object_type_atom(obj.object_type()),
+                    bounds,
+                    matrix_of(&obj),
+                )
             })
             .collect();
         Ok(objects)
@@ -1534,7 +1539,15 @@ fn document_page_objects(
 // (index, width, height, bits_per_pixel, filters, bounds, matrix). width/height
 // are the image's intrinsic pixel size; `filters` are the PDF stream filter
 // names; `matrix` is the placement transform (see `Matrix6`).
-type ImageInfo = (usize, u32, u32, u32, Vec<String>, Option<Rect>, Option<Matrix6>);
+type ImageInfo = (
+    usize,
+    u32,
+    u32,
+    u32,
+    Vec<String>,
+    Option<Rect>,
+    Option<Matrix6>,
+);
 
 /// Image & object extraction: image objects on a page, with how they're stored.
 #[rustler::nif(schedule = "DirtyCpu")]
