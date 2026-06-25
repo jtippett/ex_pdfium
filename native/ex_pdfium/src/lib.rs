@@ -98,6 +98,7 @@ mod atoms {
         // structure & navigation
         attachment_not_found,
         attachment_failed,
+        attachment_too_large,
         // forms: form technology (FPDF_GetFormType)
         none,
         acrobat,
@@ -512,6 +513,11 @@ const MAX_RENDER_SCALE: f64 = 100.0;
 // a decoded image (image_data/3) — so a hostile page (huge MediaBox) or malformed
 // image XObject can't drive a multi-GB allocation. 100 MP RGBA is ~400 MB.
 const MAX_BITMAP_PIXELS: i64 = 100_000_000;
+
+// Cap a decoded embedded-file size (attachment_data/2). Embedded files are stored
+// compressed, so a small PDF can decode to a far larger file (a "zip bomb"); bound
+// the absolute decoded size while still allowing genuinely large attachments.
+const MAX_ATTACHMENT_BYTES: usize = 100_000_000;
 
 impl Sizing {
     fn is_positive(&self) -> bool {
@@ -1233,6 +1239,12 @@ fn document_attachment_data<'a>(
             .attachments()
             .get(index)
             .map_err(|_| atoms::attachment_not_found())?;
+        // `len()` reads the decoded size via a null-buffer call WITHOUT allocating;
+        // reject an oversized (or maliciously compressed) embedded file before
+        // `save_to_bytes` decodes it into memory.
+        if attachment.len() > MAX_ATTACHMENT_BYTES {
+            return Err(atoms::attachment_too_large());
+        }
         let bytes = attachment
             .save_to_bytes()
             .map_err(|_| atoms::attachment_failed())?;

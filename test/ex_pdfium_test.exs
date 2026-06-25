@@ -12,6 +12,7 @@ defmodule ExPdfiumTest do
   @forms Path.join(@fixtures, "forms.pdf")
   @images Path.join(@fixtures, "images.pdf")
   @huge_page Path.join(@fixtures, "huge_page.pdf")
+  @attachment_bomb Path.join(@fixtures, "attachment_bomb.pdf")
 
   describe "Phase 0: the NIF loads and pdfium initializes" do
     test "pdfium_version/0 returns a string" do
@@ -596,6 +597,15 @@ defmodule ExPdfiumTest do
     test "attachment_data for a bad index" do
       {:ok, doc} = ExPdfium.open(@structure)
       assert {:error, :attachment_not_found} = ExPdfium.attachment_data(doc, 99)
+    end
+
+    test "a decompression-bomb attachment is rejected without decoding it" do
+      # attachment_bomb.pdf is ~100 KB but its embedded file decodes to 105 MB.
+      {:ok, doc} = ExPdfium.open(@attachment_bomb)
+      # Listing reports the declared size cheaply (no allocation)...
+      assert {:ok, [%{name: "bomb.bin", size: 105_000_000}]} = ExPdfium.attachments(doc)
+      # ...but extracting it is capped, so the 105 MB is never materialized.
+      assert {:error, :attachment_too_large} = ExPdfium.attachment_data(doc, 0)
     end
 
     test "attachments and attachment_data on a closed document" do

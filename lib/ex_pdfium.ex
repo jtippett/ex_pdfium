@@ -97,6 +97,13 @@ defmodule ExPdfium do
 
   Returns `{:error, :document_closed}` if the document has been closed with
   `close/1`.
+
+  > #### 65,535-page limit {: .info}
+  > pdfium-render represents page indices as a 16-bit integer, so documents with
+  > more than 65,535 pages are not supported and this count wraps (reports
+  > `count mod 65536`). Such documents are pathological; if you handle untrusted
+  > input that might contain one, treat the page count as unreliable above that
+  > bound.
   """
   @spec page_count(Document.t()) ::
           {:ok, non_neg_integer()} | {:error, :document_closed | :lock_poisoned}
@@ -472,8 +479,11 @@ defmodule ExPdfium do
   @doc """
   Extract the bytes of the embedded file at `index` (see `attachments/1`).
 
-  Returns `{:error, :attachment_not_found}` for an invalid index, or
-  `{:error, :attachment_failed}` if pdfium cannot read the file data.
+  Returns `{:error, :attachment_not_found}` for an invalid index,
+  `{:error, :attachment_failed}` if pdfium cannot read the file data, or
+  `{:error, :attachment_too_large}` if the **decoded** file exceeds a safety cap
+  (embedded files are stored compressed, so a small PDF can decode to a much
+  larger file — see the "Untrusted input" note on the module).
   """
   @spec attachment_data(Document.t(), non_neg_integer()) ::
           {:ok, binary()} | {:error, atom()}
