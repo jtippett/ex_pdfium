@@ -28,8 +28,11 @@ jobs:
         include:
           # NIF ABI is backward-compatible, so one OTP exercises the code. The
           # release artifact (built against rustler's NIF version) loads on 27/28/29+.
+          # Elixir tracks local dev (1.20.x): `mix format` is Elixir-version-specific,
+          # so matching versions keeps the formatter check in lockstep. The library
+          # itself still targets `~> 1.17` (plain Elixir; nothing 1.20-only).
           - otp: "27.2"
-            elixir: "1.18.0"
+            elixir: "1.20.1"
     env:
       MIX_ENV: test
       EXPDFIUM_BUILD: "1"
