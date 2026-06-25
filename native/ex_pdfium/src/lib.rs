@@ -1480,9 +1480,29 @@ fn bitmap_format_atom(f: PdfBitmapFormat) -> Atom {
     }
 }
 
-// (index, type, bounds): `index` is the object's 0-based position in the page's
-// object list — pass it to image_data/3 / image_raw_data/3.
-type PageObject = (usize, Atom, Option<Rect>);
+// A page object's transformation matrix (a, b, c, d, e, f) — the PDF `cm`
+// transform mapping the object's space onto the page. For an image, it maps the
+// unit square to the placement, so a caller can recover scale/rotation/flip
+// deterministically (orient an extracted stream without re-rendering).
+type Matrix6 = (f64, f64, f64, f64, f64, f64);
+
+// The object's transformation matrix, or None if pdfium cannot report it.
+fn matrix_of(obj: &PdfPageObject) -> Option<Matrix6> {
+    obj.matrix().ok().map(|m| {
+        (
+            m.a() as f64,
+            m.b() as f64,
+            m.c() as f64,
+            m.d() as f64,
+            m.e() as f64,
+            m.f() as f64,
+        )
+    })
+}
+
+// (index, type, bounds, matrix): `index` is the object's 0-based position in the
+// page's object list — pass it to image_data/3 / image_raw_data/3.
+type PageObject = (usize, Atom, Option<Rect>, Option<Matrix6>);
 
 /// Image & object extraction: every object on a 0-indexed page, in page order.
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -1504,16 +1524,17 @@ fn document_page_objects(
             .enumerate()
             .map(|(i, obj)| {
                 let bounds = obj.bounds().ok().map(|q| rect_of(&q.to_rect()));
-                (i, object_type_atom(obj.object_type()), bounds)
+                (i, object_type_atom(obj.object_type()), bounds, matrix_of(&obj))
             })
             .collect();
         Ok(objects)
     })
 }
 
-// (index, width, height, bits_per_pixel, filters, bounds). width/height are the
-// image's intrinsic pixel size; `filters` are the PDF stream filter names.
-type ImageInfo = (usize, u32, u32, u32, Vec<String>, Option<Rect>);
+// (index, width, height, bits_per_pixel, filters, bounds, matrix). width/height
+// are the image's intrinsic pixel size; `filters` are the PDF stream filter
+// names; `matrix` is the placement transform (see `Matrix6`).
+type ImageInfo = (usize, u32, u32, u32, Vec<String>, Option<Rect>, Option<Matrix6>);
 
 /// Image & object extraction: image objects on a page, with how they're stored.
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -1540,7 +1561,7 @@ fn document_images(
                 let bpp = img.bits_per_pixel().map(u32::from).unwrap_or(0);
                 let filters = img.filters().iter().map(|f| f.name().to_string()).collect();
                 let bounds = obj.bounds().ok().map(|q| rect_of(&q.to_rect()));
-                Some((i, width, height, bpp, filters, bounds))
+                Some((i, width, height, bpp, filters, bounds, matrix_of(&obj)))
             })
             .collect();
         Ok(images)

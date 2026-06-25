@@ -7,6 +7,15 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Added
+- **Object transformation matrix** (read): `page_objects/2` and `images/2` now
+  include a `:matrix` key — the object's `[a b c d e f]` transform as
+  `t:ExPdfium.matrix/0` (`%{a:, b:, c:, d:, e:, f:}`), or `nil` if pdfium can't
+  report it. For an image it maps the unit square onto the page, so a caller can
+  recover on-page scale, rotation, and flip deterministically — e.g. to orient an
+  extracted `image_raw_data/3` stream correctly without re-rendering. Additive and
+  backwards-compatible.
+
 ## 0.3.0 - 2026-06-25
 
 ### Added

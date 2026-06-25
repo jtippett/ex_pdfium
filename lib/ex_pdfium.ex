@@ -211,6 +211,25 @@ defmodule ExPdfium do
           top: float()
         }
 
+  @typedoc """
+  A page object's transformation matrix, the six values `a, b, c, d, e, f` of the
+  PDF `cm` transform `[a b c d e f]`. A point `(x, y)` in the object's own space
+  maps to `(a·x + c·y + e, b·x + d·y + f)` on the page.
+
+  For an image object the matrix maps the unit square `[0,1]×[0,1]` onto the
+  placement, so `a`/`d` carry scale, `b`/`c` shear/rotation, and `e`/`f` the
+  translation — enough to recover the on-page scale, rotation, and flip
+  deterministically.
+  """
+  @type matrix :: %{
+          a: float(),
+          b: float(),
+          c: float(),
+          d: float(),
+          e: float(),
+          f: float()
+        }
+
   @doc group: :text
   @doc """
   Extract the plain text of a 0-indexed page.
@@ -615,18 +634,22 @@ defmodule ExPdfium do
   List every object on a 0-indexed page, in page order.
 
   Each object is `%{index: non_neg_integer(), type: atom(), bounds: t:bounds/0 |
-  nil}`, where `type` is one of `:text`, `:path`, `:image`, `:shading`, `:form`
-  (an XObject form), or `:unsupported`. `index` is the object's position in the
-  page's object list — pass it to `image_data/3` / `image_raw_data/3`. It is valid
-  only until the document is mutated (a write op can shift object indices).
+  nil, matrix: t:matrix/0 | nil}`, where `type` is one of `:text`, `:path`,
+  `:image`, `:shading`, `:form` (an XObject form), or `:unsupported`. `index` is
+  the object's position in the page's object list — pass it to `image_data/3` /
+  `image_raw_data/3`. It is valid only until the document is mutated (a write op
+  can shift object indices).
+
+  `matrix` is the object's transformation matrix (see `t:matrix/0`); it is `nil`
+  only if pdfium cannot report it.
   """
   @spec page_objects(Document.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, atom()}
   def page_objects(%Document{ref: ref}, page_index) do
     case Native.document_page_objects(ref, page_index) do
       {:ok, objects} ->
         {:ok,
-         Enum.map(objects, fn {index, type, bounds} ->
-           %{index: index, type: type, bounds: opt_rect(bounds)}
+         Enum.map(objects, fn {index, type, bounds, matrix} ->
+           %{index: index, type: type, bounds: opt_rect(bounds), matrix: opt_matrix(matrix)}
          end)}
 
       {:error, _} = err ->
@@ -646,7 +669,8 @@ defmodule ExPdfium do
         height: non_neg_integer(),        # intrinsic image height, in pixels
         bits_per_pixel: non_neg_integer(),
         filters: [String.t()],            # PDF stream filters, e.g. ["DCTDecode"]
-        bounds: t:bounds/0 | nil          # where it sits on the page, in points
+        bounds: t:bounds/0 | nil,         # where it sits on the page, in points
+        matrix: t:matrix/0 | nil          # placement transform (scale/rotation/flip)
       }
 
   `width`/`height` are pdfium's reported pixel dimensions (a `0` means pdfium
@@ -655,20 +679,26 @@ defmodule ExPdfium do
   Use `image_data/3` to get decoded pixels, or `image_raw_data/3` for the original
   encoded bytes — `filters` tells you the encoding (a `"DCTDecode"` raw stream is a
   ready JPEG; `"FlateDecode"` is zlib-compressed samples, not a standalone file).
+
+  `matrix` is the image's placement transform (see `t:matrix/0`). Because it maps
+  the unit square onto the page, a caller can recover the image's on-page scale,
+  rotation, and flip deterministically — e.g. to orient an extracted
+  `image_raw_data/3` stream correctly without re-rendering the page.
   """
   @spec images(Document.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, atom()}
   def images(%Document{ref: ref}, page_index) do
     case Native.document_images(ref, page_index) do
       {:ok, images} ->
         {:ok,
-         Enum.map(images, fn {index, width, height, bpp, filters, bounds} ->
+         Enum.map(images, fn {index, width, height, bpp, filters, bounds, matrix} ->
            %{
              index: index,
              width: width,
              height: height,
              bits_per_pixel: bpp,
              filters: filters,
-             bounds: opt_rect(bounds)
+             bounds: opt_rect(bounds),
+             matrix: opt_matrix(matrix)
            }
          end)}
 
@@ -1216,4 +1246,9 @@ defmodule ExPdfium do
 
   defp opt_rect(nil), do: nil
   defp opt_rect(rect), do: rect_to_map(rect)
+
+  defp opt_matrix(nil), do: nil
+
+  defp opt_matrix({a, b, c, d, e, f}),
+    do: %{a: a, b: b, c: c, d: d, e: e, f: f}
 end

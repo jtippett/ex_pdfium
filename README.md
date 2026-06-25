@@ -145,8 +145,8 @@ buffer (`width * height * 4` bytes).
 
 # The image objects, and how they're stored:
 {:ok, images} = ExPdfium.images(doc, 0)
-# => [%{index: 2, width: 800, height: 600, bits_per_pixel: 24,
-#       filters: ["DCTDecode"], bounds: %{...}}]
+# => [%{index: 2, width: 800, height: 600, bits_per_pixel: 24, filters: ["DCTDecode"],
+#       bounds: %{...}, matrix: %{a: 800.0, b: 0.0, c: 0.0, d: 600.0, e: 40.0, f: 100.0}}]
 
 # Decoded pixels (native channel order — Vix-ready):
 {:ok, %ExPdfium.Bitmap{data: data, width: w, height: h, format: fmt}} =
@@ -155,6 +155,11 @@ buffer (`width * height * 4` bytes).
 # …or the original encoded stream (a DCTDecode image IS a .jpg):
 {:ok, jpg} = ExPdfium.image_raw_data(doc, 0, 2)
 ```
+
+The `:matrix` on each object/image is its `[a b c d e f]` transform. For an image
+it maps the unit square onto the page, so you can recover on-page scale, rotation,
+and flip deterministically — handy to orient an extracted `image_raw_data/3` stream
+(e.g. a scanned page bound for OCR) without re-rendering.
 
 ### Writing — page assembly
 

@@ -791,6 +791,16 @@ defmodule ExPdfiumTest do
       assert %{left: _, bottom: _, right: _, top: _} = image.bounds
     end
 
+    test "every object carries its transformation matrix" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, objects} = ExPdfium.page_objects(doc, 0)
+
+      for obj <- objects do
+        assert %{a: a, b: b, c: c, d: d, e: e, f: f} = obj.matrix
+        assert Enum.all?([a, b, c, d, e, f], &is_float/1)
+      end
+    end
+
     test "out-of-bounds page and closed document" do
       {:ok, doc} = ExPdfium.open(@images)
       assert {:error, :page_out_of_bounds} = ExPdfium.page_objects(doc, 9)
@@ -817,6 +827,28 @@ defmodule ExPdfiumTest do
       jpeg = Enum.find(images, &(&1.filters == ["DCTDecode"]))
       assert jpeg.width == 16
       assert jpeg.height == 12
+    end
+
+    test "the image matrix recovers placement, scale, and orientation" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, images} = ExPdfium.images(doc, 0)
+
+      # The fixture places the RGB image with `64 0 0 64 300 400 cm`: a pure
+      # scale-and-translate, no rotation or flip. The matrix lets a caller recover
+      # that deterministically instead of guessing from the extracted stream.
+      rgb = Enum.find(images, &(&1.filters == ["FlateDecode"] and &1.bits_per_pixel == 24))
+      assert %{a: a, b: b, c: c, d: d, e: e, f: f} = rgb.matrix
+      assert_in_delta a, 64.0, 0.01
+      assert_in_delta d, 64.0, 0.01
+      assert_in_delta b, 0.0, 0.01
+      assert_in_delta c, 0.0, 0.01
+      assert_in_delta e, 300.0, 0.01
+      assert_in_delta f, 400.0, 0.01
+
+      # The JPEG is placed `96 0 0 72 300 250 cm` (non-square scale).
+      jpeg = Enum.find(images, &(&1.filters == ["DCTDecode"]))
+      assert_in_delta jpeg.matrix.a, 96.0, 0.01
+      assert_in_delta jpeg.matrix.d, 72.0, 0.01
     end
 
     test "a page with no images returns an empty list" do
