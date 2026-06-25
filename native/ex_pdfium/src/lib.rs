@@ -321,6 +321,9 @@ fn with_pdfium<R>(f: impl FnOnce(&'static Pdfium) -> Result<R, Atom>) -> Result<
 /// a stable load-confirmation marker rather than inventing one.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn pdfium_version() -> String {
+    // Bind/initialize pdfium under the global lock like every other pdfium touch,
+    // so the one-time `FPDF_InitLibrary` can't race a concurrent first call.
+    let _lock = pdfium_lock();
     let _ = pdfium();
     "pdfium loaded".to_string()
 }
@@ -497,6 +500,13 @@ enum Sizing {
     },
 }
 
+// Upper bounds so a caller can't drive pdfium into an absurd (or integer-
+// overflowing) bitmap allocation inside the BEAM. Generous: 30k px covers any
+// real render; 3000 DPI / 100x scale are far beyond practical use.
+const MAX_RENDER_DIMENSION: i32 = 30_000;
+const MAX_RENDER_DPI: f64 = 3_000.0;
+const MAX_RENDER_SCALE: f64 = 100.0;
+
 impl Sizing {
     fn is_positive(&self) -> bool {
         match self {
@@ -504,6 +514,20 @@ impl Sizing {
             Sizing::Scale(s) => *s > 0.0,
             Sizing::Size { width, height } => {
                 width.is_none_or(|w| w > 0) && height.is_none_or(|h| h > 0)
+            }
+        }
+    }
+
+    // Reject absurd/overflowing sizes (also catches non-finite via the `<=`,
+    // which is false for NaN/inf). Combined with `is_positive`, this bounds every
+    // value reaching pdfium.
+    fn is_within_limits(&self) -> bool {
+        match self {
+            Sizing::Dpi(d) => *d <= MAX_RENDER_DPI,
+            Sizing::Scale(s) => *s <= MAX_RENDER_SCALE,
+            Sizing::Size { width, height } => {
+                width.is_none_or(|w| w <= MAX_RENDER_DIMENSION)
+                    && height.is_none_or(|h| h <= MAX_RENDER_DIMENSION)
             }
         }
     }
@@ -540,7 +564,7 @@ impl RenderOpts {
         } else {
             Sizing::Dpi(dpi.unwrap_or(72.0))
         };
-        if !sizing.is_positive() {
+        if !sizing.is_positive() || !sizing.is_within_limits() {
             return Err(atoms::bad_option());
         }
 
@@ -1688,6 +1712,14 @@ fn color_of(c: (u8, u8, u8, u8)) -> PdfColor {
     PdfColor::new(c.0, c.1, c.2, c.3)
 }
 
+// A stroke width must be a finite, non-negative number of points. (A negative
+// width already fails gracefully inside pdfium-render's path constructor — see
+// the codex-review note — but we reject it up front for a clear `:bad_option`
+// and to keep a non-finite value from ever reaching pdfium.)
+fn valid_stroke_width(width: f64) -> bool {
+    width.is_finite() && width >= 0.0
+}
+
 // Map a Standard-14 font name to its built-in. Unknown -> None (-> :unknown_font).
 fn font_builtin(name: &str) -> Option<PdfFontBuiltin> {
     Some(match name {
@@ -1881,6 +1913,9 @@ fn document_draw_rectangle(
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
+    if stroke.is_some() && !valid_stroke_width(stroke_width) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -1912,6 +1947,9 @@ fn document_draw_line(
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
+    if !valid_stroke_width(stroke_width) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -1944,6 +1982,9 @@ fn document_draw_circle(
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
+    if stroke.is_some() && !valid_stroke_width(stroke_width) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -1982,13 +2023,25 @@ fn document_draw_image(
     let index = page_index_u16(page_index)?;
     let (pdf_format, swap_rb) =
         image_format(&format).ok_or_else(atoms::unsupported_image_format)?;
-    let expected = img_width as usize * img_height as usize * bytes_per_pixel(pdf_format);
-    if data.len() != expected {
+    if img_width == 0 || img_height == 0 {
         return Err(atoms::bad_image_data());
     }
-    let mut buffer = data.as_slice().to_vec();
+    let packed_row = img_width as usize * bytes_per_pixel(pdf_format);
+    if data.len() != packed_row * img_height as usize {
+        return Err(atoms::bad_image_data());
+    }
+    // pdfium lays bitmap rows out with a 4-byte-aligned stride; repack the packed
+    // input into a buffer with that stride so pdfium never reads past it. (The
+    // padding is only non-trivial for the 1-/3-byte :gray / :bgr formats; 4-byte
+    // formats are already aligned, so this is a straight copy for them.)
+    let stride = (packed_row + 3) & !3;
+    let mut buffer = vec![0u8; stride * img_height as usize];
+    for (y, src_row) in data.as_slice().chunks_exact(packed_row).enumerate() {
+        buffer[y * stride..y * stride + packed_row].copy_from_slice(src_row);
+    }
     if swap_rb {
-        // RGBA/RGBX -> BGRA/BGRx: swap the red and blue bytes of each pixel.
+        // RGBA/RGBX -> BGRA/BGRx: swap the red and blue bytes of each pixel. These
+        // are 4-byte formats, so stride == packed_row (no padding within a row).
         for pixel in buffer.chunks_exact_mut(4) {
             pixel.swap(0, 2);
         }
@@ -2000,8 +2053,9 @@ fn document_draw_image(
         check_page(document, index)?;
         let width = i32::try_from(img_width).map_err(|_| atoms::bad_image_data())?;
         let height = i32::try_from(img_height).map_err(|_| atoms::bad_image_data())?;
-        // SAFETY: `buffer` is exactly width*height*bytes_per_pixel bytes (checked
-        // above) and outlives the bitmap; set_bitmap copies the pixels out.
+        // SAFETY: `buffer` is exactly `stride * height` bytes with pdfium's
+        // 4-byte-aligned row stride (built above), matching what pdfium reads, and
+        // it outlives the bitmap; set_bitmap copies the pixels out before drop.
         let bitmap = unsafe {
             PdfBitmap::from_bytes(width, height, pdf_format, &mut buffer, document.bindings())
         }

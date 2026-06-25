@@ -938,6 +938,14 @@ defmodule ExPdfiumTest do
       {:ok, doc} = ExPdfium.open(@sample)
       assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, grayscale: "yes")
     end
+
+    test "absurd render dimensions/scales are rejected before reaching pdfium" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, width: 100_000)
+      assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, height: 1_000_000)
+      assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, dpi: 1.0e9)
+      assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, scale: 1000)
+    end
   end
 
   describe "Rendering: thumbnails/2" do
@@ -1119,6 +1127,25 @@ defmodule ExPdfiumTest do
       {:ok, objects} = ExPdfium.page_objects(re, 0)
       assert Enum.count(objects, &(&1.type == :path)) >= 3
     end
+
+    test "a negative stroke width is rejected when a stroke is drawn" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      bounds = %{left: 0, bottom: 0, right: 10, top: 10}
+
+      assert {:error, :bad_option} =
+               ExPdfium.draw_line(doc, 0, {0, 0}, {10, 10}, stroke_width: -1.0)
+
+      assert {:error, :bad_option} =
+               ExPdfium.draw_rectangle(doc, 0, bounds, stroke: {0, 0, 0}, stroke_width: -1.0)
+
+      assert {:error, :bad_option} =
+               ExPdfium.draw_circle(doc, 0, {50, 50}, 10, stroke: {0, 0, 0}, stroke_width: -1.0)
+
+      # A negative stroke width with no stroke is harmless (ignored).
+      assert {:ok, ^doc} =
+               ExPdfium.draw_rectangle(doc, 0, bounds, fill: {0, 0, 0}, stroke_width: -1.0)
+    end
   end
 
   describe "Creating: draw_image/4" do
@@ -1196,6 +1223,49 @@ defmodule ExPdfiumTest do
 
       assert {:error, :bad_image_data} =
                ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 50, top: 50})
+    end
+
+    test "embeds :bgr and :gray bitmaps whose rows aren't 4-byte aligned (stride padding)" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      # :bgr, width 1 -> 3 bytes/row, which pdfium pads to a 4-byte stride.
+      bgr = %ExPdfium.Bitmap{
+        data: <<10, 20, 30, 40, 50, 60>>,
+        width: 1,
+        height: 2,
+        stride: 3,
+        format: :bgr
+      }
+
+      assert {:ok, ^doc} =
+               ExPdfium.draw_image(doc, 0, bgr, at: %{left: 0, bottom: 0, right: 10, top: 20})
+
+      # :gray, width 3 -> 3 bytes/row, also padded.
+      gray = %ExPdfium.Bitmap{
+        data: <<1, 2, 3, 4, 5, 6>>,
+        width: 3,
+        height: 2,
+        stride: 3,
+        format: :gray
+      }
+
+      assert {:ok, ^doc} =
+               ExPdfium.draw_image(doc, 0, gray, at: %{left: 20, bottom: 0, right: 40, top: 20})
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      assert {:ok, imgs} = ExPdfium.images(re, 0)
+      assert length(imgs) == 2
+    end
+
+    test "a zero dimension is rejected" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      bmp = %ExPdfium.Bitmap{data: <<>>, width: 0, height: 2, stride: 0, format: :rgba}
+
+      assert {:error, :bad_image_data} =
+               ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 10, top: 10})
     end
   end
 
