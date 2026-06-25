@@ -213,12 +213,14 @@ Each phase: implement the NIF(s), add the Elixir API + struct, write tests
 (`EXPDFIUM_BUILD=1 mix test`), update README + CHANGELOG + an `examples/*.exs`,
 keep CI green. Tag a release when a phase is a meaningful user-facing increment.
 
-> **Scope (decided 2026-06-24):** ExPdfium is a **read & extract toolkit** —
-> render + everything you can pull *out* of a PDF — not a PDF editor. Priorities
-> ordered: text extraction → metadata/geometry → structure/nav; read forms &
-> annotations next. **Write/edit (create/merge/split/save) is explicitly out of
-> scope** for now — revisit only on real demand. Keep the surface read-only and
-> tight.
+> **Scope — read first, then write (updated 2026-06-25):** v0.1–v0.2 shipped the
+> complete **read & extract** surface (text → metadata/geometry → structure/nav →
+> forms & annotations read). **The write scope is now reopened, starting in v0.3.**
+> First write phase: **page assembly + save** (merge `append/2`, split
+> `extract_pages/2`, `delete_pages/2`, `rotate_page/3`, `save_to_bytes/file`) —
+> see `docs/plans/2026-06-25-write-tools-page-assembly-design.md`. Later 0.3.x:
+> form-filling, annotation authoring, new-document creation. Same disciplined,
+> faithful, read-or-write API quality bar throughout.
 
 ### Phase 0 — Toolchain & release pipeline ✅ DONE (v0.1.0 released)
 **Shipped.** The static-link plan proved infeasible (bblanchon ships no

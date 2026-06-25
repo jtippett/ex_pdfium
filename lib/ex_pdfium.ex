@@ -5,11 +5,13 @@ defmodule ExPdfium do
   crate. The native library ships **precompiled** (`rustler_precompiled`), so
   there is no Rust toolchain or separately-installed pdfium to set up.
 
-  > #### Read-only toolkit {: .info}
-  > ExPdfium is a **read & extract** toolkit: open documents, page counts,
-  > rendering, text extraction/search, metadata, page geometry, permissions,
-  > structure (bookmarks/links/attachments), and forms/annotations (read). It
-  > does not create, edit, or save PDFs.
+  > #### A read & write toolkit {: .info}
+  > **Read:** open, render, extract/search text, metadata, page geometry,
+  > permissions, structure (bookmarks/links/attachments), and forms/annotations.
+  > **Write:** page assembly — merge (`append/2`), split/subset
+  > (`extract_pages/2`), `delete_pages/2`, `rotate_page/3` — and `save_to_bytes/1`
+  > / `save_to_file/2`. Creating content from scratch, form-filling, and
+  > annotation authoring are arriving in later 0.3.x releases.
 
   ## Example
 
@@ -495,6 +497,111 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :writing
+  @doc """
+  Serialize the document to PDF bytes.
+
+  A full save (pdfium's `FPDF_SaveAsCopy`) reflecting any edits made via the
+  writing functions. It does **not** close or alter `doc`, so you can keep
+  editing and save again. Returns `{:error, :document_closed}` if the document
+  has been closed, or `{:error, :save_failed}` if pdfium cannot serialize it.
+
+  The whole document is buffered in memory (there is no streaming save), so peak
+  usage is roughly the document size; this is fine for typical PDFs.
+  """
+  @spec save_to_bytes(Document.t()) :: {:ok, binary()} | {:error, atom()}
+  def save_to_bytes(%Document{ref: ref}), do: Native.document_save(ref)
+
+  @doc group: :writing
+  @doc """
+  Save the document to a file at `path`.
+
+  Equivalent to `save_to_bytes/1` followed by `File.write/2`. Returns `:ok`, or
+  `{:error, reason}` — either a document error (e.g. `:document_closed`) or a
+  `File.write/2` posix reason (e.g. `:enoent`, `:eacces`).
+  """
+  @spec save_to_file(Document.t(), Path.t()) :: :ok | {:error, atom()}
+  def save_to_file(%Document{} = doc, path) do
+    case save_to_bytes(doc) do
+      {:ok, bytes} -> File.write(path, bytes)
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc group: :writing
+  @doc """
+  Append a copy of every page of `source` onto the end of `doc` (merge).
+
+  Mutates `doc` in place and returns `{:ok, doc}` (the same handle). `source` is
+  not modified. Appending a document to itself returns `{:error, :same_document}`.
+  Returns `{:error, :document_closed}` if either document is closed.
+  """
+  @spec append(Document.t(), Document.t()) :: {:ok, Document.t()} | {:error, atom()}
+  def append(%Document{ref: dest_ref} = doc, %Document{ref: source_ref}),
+    do: wrap(doc, Native.document_append(dest_ref, source_ref))
+
+  @doc group: :writing
+  @doc """
+  Build a **new** document from the given 0-indexed pages of `source`.
+
+  `indices` is a list of page indices in the desired output order; duplicates are
+  allowed (e.g. `[2, 0, 0, 1]`). This is the split/subset primitive — splitting a
+  document is a few `extract_pages/2` calls. `source` is left untouched, and the
+  returned document is independent (close/GC it separately).
+
+  Returns `{:error, :empty_selection}` for an empty list, or
+  `{:error, :page_out_of_bounds}` if any index is out of range (validated before
+  any page is copied, so no partial document is produced).
+  """
+  @spec extract_pages(Document.t(), [non_neg_integer()]) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def extract_pages(%Document{ref: ref}, indices) when is_list(indices) do
+    case Native.document_extract_pages(ref, indices) do
+      {:ok, new_ref} -> {:ok, %Document{ref: new_ref}}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc group: :writing
+  @doc """
+  Delete a page, or an inclusive range of pages, from `doc`.
+
+  Pass a single 0-indexed page (`delete_pages(doc, 3)`) or an **inclusive,
+  ascending, unit-step** range (`delete_pages(doc, 2..4)` deletes pages 2, 3, and
+  4). Mutates `doc` in place and returns `{:ok, doc}`.
+
+  Errors:
+    * `:page_out_of_bounds` — the index/range falls outside the document
+    * `:cannot_delete_all_pages` — the range would remove every page (a zero-page
+      document is degenerate); extract what you want with `extract_pages/2` instead
+    * `:bad_range` — a descending or non-unit-step range (e.g. `4..2` or `0..6//2`);
+      these are rejected rather than silently reinterpreted
+  """
+  @spec delete_pages(Document.t(), non_neg_integer() | Range.t()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def delete_pages(%Document{ref: ref} = doc, index) when is_integer(index) and index >= 0,
+    do: wrap(doc, Native.document_delete_pages(ref, index, index))
+
+  def delete_pages(%Document{ref: ref} = doc, %Range{first: first, last: last, step: 1})
+      when first >= 0 and last >= 0,
+      do: wrap(doc, Native.document_delete_pages(ref, first, last))
+
+  def delete_pages(%Document{}, %Range{}), do: {:error, :bad_range}
+
+  @doc group: :writing
+  @doc """
+  Set a page's absolute rotation, in degrees.
+
+  `degrees` must be `0`, `90`, `180`, or `270`; anything else returns
+  `{:error, :bad_rotation}`. Mutates `doc` in place and returns `{:ok, doc}`. The
+  rotation persists through `save_to_bytes/1` / `save_to_file/2`.
+  """
+  @spec rotate_page(Document.t(), non_neg_integer(), 0 | 90 | 180 | 270) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def rotate_page(%Document{ref: ref} = doc, page_index, degrees)
+      when is_integer(page_index) and page_index >= 0 and is_integer(degrees),
+      do: wrap(doc, Native.document_rotate_page(ref, page_index, degrees))
+
   @doc group: :documents
   @doc """
   Explicitly close a document, releasing pdfium memory early. Optional and
@@ -507,6 +614,11 @@ defmodule ExPdfium do
   """
   @spec close(Document.t()) :: :ok
   def close(%Document{ref: ref}), do: Native.document_close(ref)
+
+  # In-place write ops return `:ok` from the NIF (encoded as `{:ok, :ok}`); thread
+  # the original handle back as `{:ok, doc}`, and pass errors through unchanged.
+  defp wrap(doc, {:ok, _}), do: {:ok, doc}
+  defp wrap(_doc, {:error, _} = err), do: err
 
   defp rect_to_map({left, bottom, right, top}),
     do: %{left: left, bottom: bottom, right: right, top: top}

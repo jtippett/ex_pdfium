@@ -75,4 +75,11 @@ defmodule ExPdfium.Native do
   def document_form_type(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_form_fields(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_annotations(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+
+  # v0.3 — writing: page assembly & save.
+  def document_save(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_append(_dest, _src), do: :erlang.nif_error(:nif_not_loaded)
+  def document_extract_pages(_src, _indices), do: :erlang.nif_error(:nif_not_loaded)
+  def document_delete_pages(_doc, _from, _to), do: :erlang.nif_error(:nif_not_loaded)
+  def document_rotate_page(_doc, _page_index, _degrees), do: :erlang.nif_error(:nif_not_loaded)
 end

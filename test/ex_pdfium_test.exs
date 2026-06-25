@@ -732,4 +732,208 @@ defmodule ExPdfiumTest do
       assert ok?
     end
   end
+
+  describe "Writing: save_to_bytes/1 and save_to_file/2" do
+    test "round-trips a document through bytes" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, <<"%PDF", _::binary>> = bytes} = ExPdfium.save_to_bytes(doc)
+      assert {:ok, reopened} = ExPdfium.open(bytes)
+      assert {:ok, 2} = ExPdfium.page_count(reopened)
+    end
+
+    test "save_to_file writes a reopenable file" do
+      {:ok, doc} = ExPdfium.open(@text)
+      path = Path.join(System.tmp_dir!(), "ex_pdfium_#{System.unique_integer([:positive])}.pdf")
+      on_exit(fn -> File.rm(path) end)
+      assert :ok = ExPdfium.save_to_file(doc, path)
+      assert {:ok, reopened} = ExPdfium.open(path)
+      assert {:ok, 2} = ExPdfium.page_count(reopened)
+    end
+
+    test "saving does not close or alter the document" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, _bytes} = ExPdfium.save_to_bytes(doc)
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+    end
+
+    test "save on a closed document" do
+      {:ok, doc} = ExPdfium.open(@text)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.save_to_bytes(doc)
+      path = Path.join(System.tmp_dir!(), "ex_pdfium_closed.pdf")
+      assert {:error, :document_closed} = ExPdfium.save_to_file(doc, path)
+    end
+  end
+
+  describe "Writing: append/2" do
+    test "merges another document's pages onto the end, returning the same handle" do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, src} = ExPdfium.open(@sample)
+      assert {:ok, ^doc} = ExPdfium.append(doc, src)
+      assert {:ok, 4} = ExPdfium.page_count(doc)
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, reopened} = ExPdfium.open(bytes)
+      assert {:ok, 4} = ExPdfium.page_count(reopened)
+      assert {:ok, t0} = ExPdfium.extract_text(reopened, 0)
+      assert t0 =~ "Hello pdfium world"
+    end
+
+    test "appending a document to itself is rejected" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:error, :same_document} = ExPdfium.append(doc, doc)
+    end
+
+    test "append on a closed destination" do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, src} = ExPdfium.open(@sample)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.append(doc, src)
+    end
+  end
+
+  describe "Writing: extract_pages/2" do
+    test "creates a new document with the selected pages, in the given order" do
+      {:ok, src} = ExPdfium.open(@text)
+      assert {:ok, doc} = ExPdfium.extract_pages(src, [1, 0])
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, reopened} = ExPdfium.open(bytes)
+      assert {:ok, t0} = ExPdfium.extract_text(reopened, 0)
+      assert {:ok, t1} = ExPdfium.extract_text(reopened, 1)
+      assert t0 =~ "Second page text"
+      assert t1 =~ "Hello pdfium world"
+    end
+
+    test "leaves the source document untouched" do
+      {:ok, src} = ExPdfium.open(@text)
+      assert {:ok, _doc} = ExPdfium.extract_pages(src, [0])
+      assert {:ok, 2} = ExPdfium.page_count(src)
+    end
+
+    test "an out-of-range index is rejected before any copying" do
+      {:ok, src} = ExPdfium.open(@text)
+      assert {:error, :page_out_of_bounds} = ExPdfium.extract_pages(src, [0, 9])
+    end
+
+    test "an empty selection is rejected" do
+      {:ok, src} = ExPdfium.open(@text)
+      assert {:error, :empty_selection} = ExPdfium.extract_pages(src, [])
+    end
+
+    test "extract_pages on a closed document" do
+      {:ok, src} = ExPdfium.open(@text)
+      :ok = ExPdfium.close(src)
+      assert {:error, :document_closed} = ExPdfium.extract_pages(src, [0])
+    end
+  end
+
+  describe "Writing: delete_pages/2" do
+    test "deletes a single page" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, ^doc} = ExPdfium.delete_pages(doc, 0)
+      assert {:ok, 1} = ExPdfium.page_count(doc)
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, reopened} = ExPdfium.open(bytes)
+      assert {:ok, t0} = ExPdfium.extract_text(reopened, 0)
+      assert t0 =~ "Second page text"
+    end
+
+    test "deletes an inclusive range" do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, src} = ExPdfium.open(@sample)
+      {:ok, doc} = ExPdfium.append(doc, src)
+      assert {:ok, ^doc} = ExPdfium.delete_pages(doc, 1..2)
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+    end
+
+    test "an out-of-range index is rejected" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:error, :page_out_of_bounds} = ExPdfium.delete_pages(doc, 5)
+      assert {:error, :page_out_of_bounds} = ExPdfium.delete_pages(doc, 1..9)
+    end
+
+    test "deleting every page is refused" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:error, :cannot_delete_all_pages} = ExPdfium.delete_pages(doc, 0..1)
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+    end
+
+    test "descending or stepped ranges are rejected, not silently reinterpreted" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:error, :bad_range} = ExPdfium.delete_pages(doc, 1..0//-1)
+      assert {:error, :bad_range} = ExPdfium.delete_pages(doc, 0..1//2)
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+    end
+  end
+
+  describe "Writing: rotate_page/3" do
+    test "rotates a page and persists it through a save" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, ^doc} = ExPdfium.rotate_page(doc, 0, 90)
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, reopened} = ExPdfium.open(bytes)
+      assert {:ok, %{rotation: 90}} = ExPdfium.page_info(reopened, 0)
+    end
+
+    test "an unsupported angle is rejected" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:error, :bad_rotation} = ExPdfium.rotate_page(doc, 0, 45)
+    end
+
+    test "an out-of-range page is rejected" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:error, :page_out_of_bounds} = ExPdfium.rotate_page(doc, 9, 90)
+    end
+  end
+
+  describe "Writing: concurrency" do
+    test "extract_pages/save are safe under concurrency" do
+      {:ok, src} = ExPdfium.open(@text)
+
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn _ ->
+            {:ok, doc} = ExPdfium.extract_pages(src, [1, 0])
+            {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+            byte_size(bytes) > 0 and match?({:ok, 2}, ExPdfium.page_count(doc))
+          end,
+          max_concurrency: 32,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
+    end
+
+    test "in-place mutators racing reads on a shared doc stay consistent" do
+      {:ok, doc} = ExPdfium.open(@text)
+      angles = [0, 90, 180, 270]
+
+      ok? =
+        1..200
+        |> Task.async_stream(
+          fn i ->
+            # Hammer rotate (a mutator) and render/page_info (reads) on one shared
+            # document. The global lock serializes them, so last-write-wins but the
+            # document never corrupts: page_count is stable, rotation is always
+            # valid, and a save still succeeds.
+            {:ok, ^doc} = ExPdfium.rotate_page(doc, 0, Enum.at(angles, rem(i, 4)))
+            {:ok, %{rotation: r}} = ExPdfium.page_info(doc, 0)
+            {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+
+            r in angles and byte_size(bytes) > 0 and match?({:ok, 2}, ExPdfium.page_count(doc))
+          end,
+          max_concurrency: 32,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
+    end
+  end
 end

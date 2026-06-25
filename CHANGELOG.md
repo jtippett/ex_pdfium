@@ -7,6 +7,23 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Added
+- **Writing — page assembly & save** (v0.3, reopening the write scope that was
+  out of scope through v0.2):
+  - `ExPdfium.save_to_bytes/1` and `save_to_file/2` — full save (`FPDF_SaveAsCopy`)
+    that leaves the document open for further edits.
+  - `ExPdfium.append/2` — merge: copy all of another document's pages onto the end.
+  - `ExPdfium.extract_pages/2` — build a new document from selected pages, in any
+    order (the split/subset primitive).
+  - `ExPdfium.delete_pages/2` — delete a page index or an inclusive range.
+  - `ExPdfium.rotate_page/3` — set a page's absolute rotation (0/90/180/270).
+  - In-place mutators return `{:ok, doc}` (the same handle) so they thread through
+    `with`/pipelines; `extract_pages/2` returns `{:ok, new_doc}`. All writes are
+    serialized through the same global pdfium lock as reads. New error atoms:
+    `:same_document`, `:empty_selection`, `:cannot_delete_all_pages`, `:bad_range`,
+    `:bad_rotation`, `:save_failed`, and the operation-failure atoms
+    `:create_failed` / `:copy_failed` / `:append_failed` / `:delete_failed`.
+
 ## 0.2.0 - 2026-06-25
 
 ### Added

@@ -130,6 +130,16 @@ mod atoms {
         rich_media,
         xfa_widget,
         redacted,
+        // write: page assembly & save
+        same_document,
+        empty_selection,
+        cannot_delete_all_pages,
+        bad_rotation,
+        save_failed,
+        create_failed,
+        copy_failed,
+        append_failed,
+        delete_failed,
     }
 }
 
@@ -1251,6 +1261,159 @@ fn document_form_fields(doc: ResourceArc<DocumentResource>) -> Result<Vec<FormFi
             }
         }
         Ok(fields)
+    })
+}
+
+// ── Writing: page assembly & save (v0.3) ─────────────────────────────────────
+//
+// Write NIFs serialize through `PDFIUM_LOCK` exactly like the read NIFs. Where a
+// pdfium-render mutator needs `&mut PdfDocument` (e.g. `pages_mut().append`) we
+// take `.as_mut()` on the `Mutex<Option<…>>` guard; the others mutate through an
+// owned `PdfPage` / document FFI handle and so only need `.as_ref()`. The lock
+// already serializes every pdfium op, so a write can't race a render or another
+// write — they queue (last-write-wins).
+
+/// v0.3: serialize the (possibly edited) document to PDF bytes. A full save
+/// (`FPDF_SaveAsCopy`); it does not close or alter the document.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_save(env: Env<'_>, doc: ResourceArc<DocumentResource>) -> Result<Binary<'_>, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let bytes = document.save_to_bytes().map_err(|_| atoms::save_failed())?;
+
+        let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
+        binary.as_mut_slice().copy_from_slice(&bytes);
+        Ok(binary.release(env))
+    })
+}
+
+/// v0.3: copy all of `src`'s pages onto the end of `dest` (merge).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_append(
+    dest: ResourceArc<DocumentResource>,
+    src: ResourceArc<DocumentResource>,
+) -> Result<Atom, Atom> {
+    // Appending a document to itself would lock one per-doc mutex twice (std
+    // Mutex is non-reentrant → self-deadlock) and can't borrow `&mut` + `&` of one
+    // document. Reject up front. (Two *distinct* docs can't deadlock here: holding
+    // PDFIUM_LOCK means no other thread holds any per-doc mutex.)
+    if std::ptr::eq(&*dest, &*src) {
+        return Err(atoms::same_document());
+    }
+    with_pdfium(|_| {
+        let mut dest_guard = dest.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let src_guard = src.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let dest_doc = dest_guard.as_mut().ok_or_else(atoms::document_closed)?;
+        let src_doc = src_guard.as_ref().ok_or_else(atoms::document_closed)?;
+        dest_doc
+            .pages_mut()
+            .append(src_doc)
+            .map_err(|_| atoms::append_failed())?;
+        Ok(atoms::ok())
+    })
+}
+
+/// v0.3: build a NEW document from the given 0-indexed pages of `src`, in the
+/// given order (duplicates allowed). All indices are validated before any copy,
+/// so a bad index leaves no half-built document.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_extract_pages(
+    src: ResourceArc<DocumentResource>,
+    indices: Vec<u32>,
+) -> Result<ResourceArc<DocumentResource>, Atom> {
+    if indices.is_empty() {
+        return Err(atoms::empty_selection());
+    }
+    with_pdfium(|pdfium| {
+        let src_guard = src.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let src_doc = src_guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let count = u32::from(src_doc.pages().len());
+        for &i in &indices {
+            if i >= count {
+                return Err(atoms::page_out_of_bounds());
+            }
+        }
+
+        let mut new_doc = pdfium
+            .create_new_pdf()
+            .map_err(|_| atoms::create_failed())?;
+        for (dest_idx, &src_idx) in indices.iter().enumerate() {
+            let src_i = u16::try_from(src_idx).map_err(|_| atoms::page_out_of_bounds())?;
+            let dest_i = u16::try_from(dest_idx).map_err(|_| atoms::page_out_of_bounds())?;
+            new_doc
+                .pages_mut()
+                .copy_page_from_document(src_doc, src_i, dest_i)
+                .map_err(|_| atoms::copy_failed())?;
+        }
+
+        Ok(ResourceArc::new(DocumentResource {
+            doc: Mutex::new(Some(new_doc)),
+        }))
+    })
+}
+
+/// v0.3: delete the inclusive 0-indexed page range `[from, to]`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_delete_pages(
+    doc: ResourceArc<DocumentResource>,
+    from: u32,
+    to: u32,
+) -> Result<Atom, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let count = u32::from(document.pages().len());
+        if from > to || to >= count {
+            return Err(atoms::page_out_of_bounds());
+        }
+        // Refuse to leave a zero-page document (symmetric with extract_pages'
+        // empty-selection guard; a 0-page PDF is degenerate and reader-dependent).
+        if to - from + 1 >= count {
+            return Err(atoms::cannot_delete_all_pages());
+        }
+        // Delete from the highest index down so the lower indices we still need
+        // stay valid as pages are removed. (`PdfPage::delete` is the non-
+        // deprecated path; the `PdfPages` range delete is deprecated.)
+        for i in (from..=to).rev() {
+            let idx = u16::try_from(i).map_err(|_| atoms::page_out_of_bounds())?;
+            let page = document
+                .pages()
+                .get(idx)
+                .map_err(|_| atoms::page_out_of_bounds())?;
+            page.delete().map_err(|_| atoms::delete_failed())?;
+        }
+        Ok(atoms::ok())
+    })
+}
+
+/// v0.3: set a page's absolute rotation. `degrees` must be 0, 90, 180, or 270.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_rotate_page(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    degrees: u32,
+) -> Result<Atom, Atom> {
+    let rotation = match degrees {
+        0 => PdfPageRenderRotation::None,
+        90 => PdfPageRenderRotation::Degrees90,
+        180 => PdfPageRenderRotation::Degrees180,
+        270 => PdfPageRenderRotation::Degrees270,
+        _ => return Err(atoms::bad_rotation()),
+    };
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        // Rotation is page-dictionary metadata set directly on the page object,
+        // so it persists in the document (and a later save) without content
+        // regeneration.
+        page.set_rotation(rotation);
+        Ok(atoms::ok())
     })
 }
 

@@ -122,9 +122,31 @@ uncompressed 4-channel buffer (`width * height * 4` bytes).
 #       hidden: false, printed: false}, ...]
 ```
 
-> Reading is the whole scope — ExPdfium does not create, fill, or save PDFs.
 > XFA form data needs a V8-enabled pdfium build, which is not shipped; `:xfa_full`
 > documents may expose an empty or partial AcroForm view.
+
+### Writing — page assembly
+
+```elixir
+# Merge, rotate, and save. In-place ops return {:ok, doc} (the same handle), so
+# they thread through `with`:
+with {:ok, doc} <- ExPdfium.open("a.pdf"),
+     {:ok, other} <- ExPdfium.open("b.pdf"),
+     {:ok, doc} <- ExPdfium.append(doc, other),       # merge b's pages onto a
+     {:ok, doc} <- ExPdfium.delete_pages(doc, 2..3),   # drop a page or a range
+     {:ok, doc} <- ExPdfium.rotate_page(doc, 0, 90),   # 0 | 90 | 180 | 270
+     :ok <- ExPdfium.save_to_file(doc, "merged.pdf") do
+  :ok
+end
+
+# Split / subset — build a NEW document from selected pages, in any order:
+{:ok, subset} = ExPdfium.extract_pages(doc, [0, 2, 5])
+{:ok, bytes}  = ExPdfium.save_to_bytes(subset)
+```
+
+`save_to_bytes/1` / `save_to_file/2` write a full snapshot and leave `doc` open
+for further edits. Saving and assembly are the v0.3 starting point; form-filling,
+annotation authoring, and new-document creation arrive in later 0.3.x releases.
 
 ## Development
 
