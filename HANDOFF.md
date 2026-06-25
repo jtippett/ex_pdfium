@@ -135,16 +135,48 @@ depth 64 / 50k nodes for cycle safety), `links/2` (bounds + uri|page), `attachme
 pdfattach's attachment streams — hand-wrote the `/EmbeddedFile`). clippy
 `type_complexity` fires on a 3-field tuple Vec return → use a `type` alias.
 
-### Carry into Phase 6 (forms & annotations — read)
-- AcroForm fields (`document.form()` / page form field objects) — read values;
-  filling is borderline-write, gate it. Annotations (`page.annotations()`) — read
-  type/contents/bounds. XFA/JS need the V8 pdfium build we don't ship — note it.
-  Same discipline. After Phase 6, the read-only scope (PORTING §3) is complete;
-  the remaining PORTING items are explicitly out of scope (write/edit).
+### Phase 6 done — forms & annotations (read) — THE READ-ONLY SCOPE IS COMPLETE
+`form_type/1` (:none|:acrobat|:xfa_full|:xfa_foreground), `form_fields/1`
+(AcroForm fields, one entry per widget across all pages: name/type/value/checked/
+read_only/required/page/bounds), `annotations/2` (per-page markup + widget annots:
+type=/Subtype, bounds, contents, name=/NM, hidden, printed). 75 tests; CI green
+(commit 314609e). Hand-built `forms.pdf` via a **deterministic** generator
+(`test/fixtures/forms_gen.py`, committed — re-run to regenerate byte-identical).
+
+**pdfium-render facts found (faithful exposure, documented):**
+- The **form-fill environment is initialized eagerly at open** (`PdfForm::from_pdfium`
+  inside `PdfDocument::from_pdfium`) and the form handle is threaded into
+  pages→annotations. So `page.annotations()` + widget `as_form_field()` Just Work
+  with no `document.form()` call or extra setup.
+- **Checkbox/radio `group_value()` returns the group's *selected* value** (the
+  parent `/V`), identical on every option widget — NOT each widget's export name
+  (pdfium-render exposes no public per-option export name). `is_checked()`
+  distinguishes the selected widget. So we list per-widget and document that
+  `value` is the group's answer + `checked` flags the selected one. We keep
+  `value`(String)/`checked`(bool) separate rather than coercing (pdfium-render's
+  own `field_values()` coerces checkbox→"true"/"false"; we don't).
+- Annotation type→atom and field type→atom maps are **exhaustive matches** (no
+  wildcard) so a new pdfium-render enum variant is a compile error, not a silent
+  `:unknown`.
+- `form_fields` 8 fields > rustler's 7-tuple limit → nested `(page, bounds)` as the
+  7th element (same trick as `page_info`'s boxes tuple).
+
+**After Phase 6 the read-only scope (PORTING §3) is COMPLETE.** Remaining PORTING
+items (create/merge/split/save, form *filling*) are explicitly OUT OF SCOPE per
+the user's "A — Read & extract toolkit" decision. There is no Phase 7 planned; the
+natural next steps are polish/docs/`hex.publish` (publish still needs a fresh
+go-ahead) or — only if the user reopens scope — write/edit.
+
+### Latent note (still open, low priority)
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
   `.set()`s a `OnceLock` and never checks `PDFIUM`. Fine for test_helper (runs
   first), but when it grows a real return, consider checking `PDFIUM.get().is_some()`
   and returning e.g. `:already_initialized` so a mis-ordered caller can tell.
+- Running examples in **dev** needs libpdfium located: `PDFIUM_DYNAMIC_LIB_PATH=$PWD/priv/pdfium
+  EXPDFIUM_BUILD=1 mix run examples/forms.exs` (the OS-env fallback; `mix test`
+  wires this via test_helper). Beware: a plain `mix compile` (no `EXPDFIUM_BUILD`)
+  swaps dev `_build` back to the *downloaded precompiled* artifact, so force a
+  rebuild with `EXPDFIUM_BUILD=1 mix compile --force` before running examples.
 
 The goal that kicked this off: be able to add the lib as a mix dependency and
 `mix deps.get` it on this machine (macOS arm64, **OTP 29**) with the NIF
