@@ -10,9 +10,10 @@ defmodule ExPdfium do
   > permissions, structure (bookmarks/links/attachments), forms/annotations, and
   > images & page objects.
   > **Write:** page assembly — merge (`append/2`), split/subset
-  > (`extract_pages/2`), `delete_pages/2`, `rotate_page/3` — and `save_to_bytes/1`
-  > / `save_to_file/2`. Creating content from scratch, form-filling, and
-  > annotation authoring are arriving in later 0.3.x releases.
+  > (`extract_pages/2`), `delete_pages/2`, `rotate_page/3`; document creation —
+  > `new/0`, `add_page/3`, and `draw_text`/`draw_rectangle`/`draw_line`/
+  > `draw_circle`/`draw_image`; and `save_to_bytes/1` / `save_to_file/2`.
+  > Form-filling and annotation authoring are arriving in later 0.3.x releases.
 
   ## Example
 
@@ -631,6 +632,212 @@ defmodule ExPdfium do
   def image_raw_data(%Document{ref: ref}, page_index, object_index),
     do: Native.document_image_raw_data(ref, page_index, object_index)
 
+  @page_sizes %{
+    letter: {612.0, 792.0},
+    legal: {612.0, 1008.0},
+    tabloid: {792.0, 1224.0},
+    a3: {841.89, 1190.55},
+    a4: {595.28, 841.89},
+    a5: {419.53, 595.28}
+  }
+
+  @doc group: :creation
+  @doc """
+  Create a new, empty in-memory PDF document. Add pages with `add_page/3` and
+  content with the `draw_*` functions, then `save_to_bytes/1` / `save_to_file/2`.
+  """
+  @spec new() :: {:ok, Document.t()} | {:error, atom()}
+  def new do
+    case Native.document_new() do
+      {:ok, ref} -> {:ok, %Document{ref: ref}}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc group: :creation
+  @doc """
+  Add a blank page to `doc`.
+
+  `size` is a named paper size (`:letter`, `:legal`, `:tabloid`, `:a3`, `:a4`,
+  `:a5`) or `{width, height}` in PDF points. By default the page is appended; pass
+  `at: index` to insert it at a 0-based position (an index past the end appends).
+  Returns `{:ok, doc}`, or `{:error, :bad_page_size}` for an unrecognized `size`.
+  """
+  @spec add_page(Document.t(), atom() | {number(), number()}, keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def add_page(doc, size, opts \\ [])
+
+  def add_page(%Document{ref: ref} = doc, size, opts) do
+    case page_size(size) do
+      {:ok, {w, h}} ->
+        wrap(doc, Native.document_add_page(ref, w * 1.0, h * 1.0, Keyword.get(opts, :at, -1)))
+
+      :error ->
+        {:error, :bad_page_size}
+    end
+  end
+
+  @doc group: :creation
+  @doc """
+  Draw `text` with its baseline starting at `{x, y}` (PDF points, bottom-left
+  origin) on a 0-indexed page.
+
+  ## Options
+    * `:font` — a Standard-14 font atom: `:helvetica`, `:helvetica_bold`,
+      `:helvetica_oblique`, `:helvetica_bold_oblique`, `:times_roman`,
+      `:times_bold`, `:times_italic`, `:times_bold_italic`, `:courier`,
+      `:courier_bold`, `:courier_oblique`, `:courier_bold_oblique`, `:symbol`,
+      `:zapf_dingbats` (default `:helvetica`). An unknown font → `:unknown_font`.
+    * `:size` — font size in points (default `12`)
+    * `:color` — `{r, g, b}` or `{r, g, b, a}`, 0–255 (default black)
+  """
+  @spec draw_text(Document.t(), non_neg_integer(), {number(), number()}, String.t(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def draw_text(%Document{ref: ref} = doc, page, {x, y}, text, opts \\ []) do
+    font = opts |> Keyword.get(:font, :helvetica) |> Atom.to_string()
+    size = Keyword.get(opts, :size, 12)
+    color = normalize_color(Keyword.get(opts, :color, {0, 0, 0}))
+
+    wrap(
+      doc,
+      Native.document_draw_text(ref, page, x * 1.0, y * 1.0, text, font, size * 1.0, color)
+    )
+  end
+
+  @doc group: :creation
+  @doc """
+  Draw a rectangle covering the `t:bounds/0` rectangle on a 0-indexed page.
+
+  ## Options
+    * `:fill` — fill color `{r,g,b}`/`{r,g,b,a}`, or `nil` for no fill (default `nil`)
+    * `:stroke` — outline color, or `nil` for no outline (default `nil`)
+    * `:stroke_width` — outline width in points (default `1`)
+  """
+  @spec draw_rectangle(Document.t(), non_neg_integer(), bounds(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def draw_rectangle(%Document{ref: ref} = doc, page, %{} = bounds, opts \\ []) do
+    %{left: l, bottom: b, right: r, top: t} = bounds
+    sw = Keyword.get(opts, :stroke_width, 1)
+
+    wrap(
+      doc,
+      Native.document_draw_rectangle(
+        ref,
+        page,
+        l * 1.0,
+        b * 1.0,
+        r * 1.0,
+        t * 1.0,
+        normalize_color(Keyword.get(opts, :fill)),
+        normalize_color(Keyword.get(opts, :stroke)),
+        sw * 1.0
+      )
+    )
+  end
+
+  @doc group: :creation
+  @doc """
+  Draw a straight line from `{x1, y1}` to `{x2, y2}` on a 0-indexed page.
+
+  ## Options
+    * `:stroke` — line color (default black)
+    * `:stroke_width` — line width in points (default `1`)
+  """
+  @spec draw_line(
+          Document.t(),
+          non_neg_integer(),
+          {number(), number()},
+          {number(), number()},
+          keyword()
+        ) :: {:ok, Document.t()} | {:error, atom()}
+  def draw_line(%Document{ref: ref} = doc, page, {x1, y1}, {x2, y2}, opts \\ []) do
+    stroke = normalize_color(Keyword.get(opts, :stroke, {0, 0, 0}))
+    sw = Keyword.get(opts, :stroke_width, 1)
+
+    wrap(
+      doc,
+      Native.document_draw_line(
+        ref,
+        page,
+        x1 * 1.0,
+        y1 * 1.0,
+        x2 * 1.0,
+        y2 * 1.0,
+        stroke,
+        sw * 1.0
+      )
+    )
+  end
+
+  @doc group: :creation
+  @doc """
+  Draw a circle of `radius` centered at `{cx, cy}` on a 0-indexed page.
+
+  ## Options
+    * `:fill` — fill color, or `nil` (default `nil`)
+    * `:stroke` — outline color, or `nil` (default `nil`)
+    * `:stroke_width` — outline width in points (default `1`)
+  """
+  @spec draw_circle(Document.t(), non_neg_integer(), {number(), number()}, number(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def draw_circle(%Document{ref: ref} = doc, page, {cx, cy}, radius, opts \\ []) do
+    sw = Keyword.get(opts, :stroke_width, 1)
+
+    wrap(
+      doc,
+      Native.document_draw_circle(
+        ref,
+        page,
+        cx * 1.0,
+        cy * 1.0,
+        radius * 1.0,
+        normalize_color(Keyword.get(opts, :fill)),
+        normalize_color(Keyword.get(opts, :stroke)),
+        sw * 1.0
+      )
+    )
+  end
+
+  @doc group: :creation
+  @doc """
+  Place a decoded image (an `ExPdfium.Bitmap`) into the `:at` rectangle on a
+  0-indexed page, scaling it to fill those bounds.
+
+  The bitmap is the same struct `render_page/3` and `image_data/3` produce, so you
+  can place a rendered page or an extracted image; to place a file, decode it to
+  pixels first (e.g. with Vix — see the README). pdfium stores images in BGR order
+  and ExPdfium handles the byte-order conversion, so `:rgba`, `:bgra`, `:bgrx`,
+  `:bgr`, and `:gray` bitmaps all work.
+
+  ## Options
+    * `:at` — the `t:bounds/0` rectangle to fill (required; left/bottom should be
+      the lower-left corner — inverted bounds mirror the image)
+
+  A bitmap whose `data` length doesn't match `width * height * channels` returns
+  `{:error, :bad_image_data}`.
+  """
+  @spec draw_image(Document.t(), non_neg_integer(), Bitmap.t(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def draw_image(%Document{ref: ref} = doc, page, %Bitmap{} = bitmap, opts) do
+    %{left: l, bottom: b, right: r, top: t} = Keyword.fetch!(opts, :at)
+
+    wrap(
+      doc,
+      Native.document_draw_image(
+        ref,
+        page,
+        bitmap.data,
+        bitmap.width,
+        bitmap.height,
+        Atom.to_string(bitmap.format),
+        l * 1.0,
+        b * 1.0,
+        r * 1.0,
+        t * 1.0
+      )
+    )
+  end
+
   @doc group: :writing
   @doc """
   Serialize the document to PDF bytes.
@@ -753,6 +960,21 @@ defmodule ExPdfium do
   # the original handle back as `{:ok, doc}`, and pass errors through unchanged.
   defp wrap(doc, {:ok, _}), do: {:ok, doc}
   defp wrap(_doc, {:error, _} = err), do: err
+
+  defp page_size({w, h}) when is_number(w) and is_number(h), do: {:ok, {w, h}}
+
+  defp page_size(name) when is_atom(name) do
+    case Map.fetch(@page_sizes, name) do
+      {:ok, wh} -> {:ok, wh}
+      :error -> :error
+    end
+  end
+
+  defp page_size(_), do: :error
+
+  defp normalize_color(nil), do: nil
+  defp normalize_color({r, g, b}), do: {r, g, b, 255}
+  defp normalize_color({_r, _g, _b, _a} = color), do: color
 
   defp rect_to_map({left, bottom, right, top}),
     do: %{left: left, bottom: bottom, right: right, top: top}

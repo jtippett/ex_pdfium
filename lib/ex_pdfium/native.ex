@@ -86,6 +86,25 @@ defmodule ExPdfium.Native do
   def document_image_raw_data(_doc, _page_index, _object_index),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  # Document creation: pages, text, shapes, images.
+  def document_new, do: :erlang.nif_error(:nif_not_loaded)
+  def document_add_page(_doc, _w, _h, _at), do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_draw_text(_doc, _page, _x, _y, _text, _font, _size, _color),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_draw_rectangle(_doc, _page, _l, _b, _r, _t, _fill, _stroke, _sw),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_draw_line(_doc, _page, _x1, _y1, _x2, _y2, _stroke, _sw),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_draw_circle(_doc, _page, _cx, _cy, _r, _fill, _stroke, _sw),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_draw_image(_doc, _page, _data, _w, _h, _fmt, _l, _b, _r, _t),
+    do: :erlang.nif_error(:nif_not_loaded)
+
   # v0.3 — writing: page assembly & save.
   def document_save(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_append(_dest, _src), do: :erlang.nif_error(:nif_not_loaded)

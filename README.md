@@ -167,8 +167,63 @@ end
 ```
 
 `save_to_bytes/1` / `save_to_file/2` write a full snapshot and leave `doc` open
-for further edits. Saving and assembly are the v0.3 starting point; form-filling,
-annotation authoring, and new-document creation arrive in later 0.3.x releases.
+for further edits.
+
+### Creating documents
+
+Build a PDF from scratch — pages, text (Standard-14 fonts), shapes, and images.
+Coordinates are PDF points, origin bottom-left; colors are `{r,g,b}`/`{r,g,b,a}`
+(0–255).
+
+```elixir
+with {:ok, doc} <- ExPdfium.new(),
+     {:ok, doc} <- ExPdfium.add_page(doc, :letter),   # :a4 | :legal | … | {w_pts, h_pts}
+     {:ok, doc} <- ExPdfium.draw_text(doc, 0, {72, 720}, "Invoice #42",
+                     font: :helvetica_bold, size: 18),
+     {:ok, doc} <- ExPdfium.draw_line(doc, 0, {72, 710}, {540, 710}, stroke: {0, 0, 0}),
+     {:ok, doc} <- ExPdfium.draw_rectangle(doc, 0, %{left: 72, bottom: 600, right: 540, top: 690},
+                     fill: {245, 245, 245}, stroke: {200, 200, 200}),
+     {:ok, doc} <- ExPdfium.draw_circle(doc, 0, {120, 645}, 24, fill: {220, 50, 50}),
+     :ok <- ExPdfium.save_to_file(doc, "invoice.pdf") do
+  :ok
+end
+```
+
+#### Placing images
+
+`draw_image/4` takes **decoded pixels** — an `ExPdfium.Bitmap`, the same struct
+`render_page/3` and `image_data/3` produce — not an encoded JPEG/PNG. So you can
+re-place a rendered page or an extracted image directly:
+
+```elixir
+{:ok, bmp} = ExPdfium.image_data(src_doc, 0, 2)
+{:ok, doc} = ExPdfium.draw_image(doc, 0, bmp, at: %{left: 400, bottom: 700, right: 540, top: 760})
+```
+
+> #### Pixel byte order {: .info}
+> pdfium stores images in **BGRA** order. `draw_image/4` takes `:bgra`, `:bgr`,
+> `:bgrx`, and `:gray` bitmaps as-is, and for `:rgba`/`:rgbx` (what `render_page/3`
+> yields by default, and what most image libraries produce) it **swaps R↔B for
+> you** — so you never have to think about byte order.
+
+To place an image *file*, decode it to pixels first with the optional
+[Vix](https://hex.pm/packages/vix) library (the same one used for rendering):
+
+```elixir
+{:ok, vimg} = Vix.Vips.Image.new_from_file("logo.png")   # a 4-band RGBA image
+{w, h, 4} = Vix.Vips.Image.shape(vimg)
+{:ok, pixels} = Vix.Vips.Image.write_to_binary(vimg)
+
+bitmap = %ExPdfium.Bitmap{data: pixels, width: w, height: h, stride: w * 4, format: :rgba}
+{:ok, doc} = ExPdfium.draw_image(doc, 0, bitmap, at: %{left: 400, bottom: 700, right: 540, top: 760})
+```
+
+> If the source isn't already 4-band RGBA, convert it first (e.g.
+> `Vix.Vips.Operation.colourspace/2` and add an alpha band). `draw_image/4`
+> accepts `:rgba`, `:bgra`, `:bgrx`, `:bgr`, and `:gray`.
+
+Saving and assembly are the v0.3 write surface; form-filling and annotation
+authoring arrive in later 0.3.x releases.
 
 ## Development
 

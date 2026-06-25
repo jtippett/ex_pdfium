@@ -160,6 +160,11 @@ mod atoms {
         copy_failed,
         append_failed,
         delete_failed,
+        // document creation
+        unknown_font,
+        bad_image_data,
+        unsupported_image_format,
+        draw_failed,
     }
 }
 
@@ -1644,6 +1649,347 @@ fn document_rotate_page(
         // regeneration.
         page.set_rotation(rotation);
         Ok(atoms::ok())
+    })
+}
+
+// ── Document creation: pages, text, shapes, images ───────────────────────────
+
+fn color_of(c: (u8, u8, u8, u8)) -> PdfColor {
+    PdfColor::new(c.0, c.1, c.2, c.3)
+}
+
+// Map a Standard-14 font name to its built-in. Unknown -> None (-> :unknown_font).
+fn font_builtin(name: &str) -> Option<PdfFontBuiltin> {
+    Some(match name {
+        "helvetica" => PdfFontBuiltin::Helvetica,
+        "helvetica_bold" => PdfFontBuiltin::HelveticaBold,
+        "helvetica_oblique" => PdfFontBuiltin::HelveticaOblique,
+        "helvetica_bold_oblique" => PdfFontBuiltin::HelveticaBoldOblique,
+        "times_roman" => PdfFontBuiltin::TimesRoman,
+        "times_bold" => PdfFontBuiltin::TimesBold,
+        "times_italic" => PdfFontBuiltin::TimesItalic,
+        "times_bold_italic" => PdfFontBuiltin::TimesBoldItalic,
+        "courier" => PdfFontBuiltin::Courier,
+        "courier_bold" => PdfFontBuiltin::CourierBold,
+        "courier_oblique" => PdfFontBuiltin::CourierOblique,
+        "courier_bold_oblique" => PdfFontBuiltin::CourierBoldOblique,
+        "symbol" => PdfFontBuiltin::Symbol,
+        "zapf_dingbats" => PdfFontBuiltin::ZapfDingbats,
+        _ => return None,
+    })
+}
+
+// pdfium bitmaps are BGR-ordered. Map a Bitmap format to (pdfium format, swap_rb):
+// an :rgba/:rgbx buffer needs R and B swapped to become BGRA/BGRx.
+fn image_format(name: &str) -> Option<(PdfBitmapFormat, bool)> {
+    Some(match name {
+        "bgra" => (PdfBitmapFormat::BGRA, false),
+        "rgba" => (PdfBitmapFormat::BGRA, true),
+        "bgrx" => (PdfBitmapFormat::BGRx, false),
+        "rgbx" => (PdfBitmapFormat::BGRx, true),
+        "bgr" => (PdfBitmapFormat::BGR, false),
+        "gray" => (PdfBitmapFormat::Gray, false),
+        _ => return None,
+    })
+}
+
+fn bytes_per_pixel(f: PdfBitmapFormat) -> usize {
+    match f {
+        PdfBitmapFormat::Gray => 1,
+        PdfBitmapFormat::BGR => 3,
+        _ => 4,
+    }
+}
+
+// Validate a page index before we build any object. Drawing builds the object
+// first (it needs the document), then adds it to the page; if the page were
+// missing, the orphaned, never-added object would be dropped — which pdfium does
+// not handle cleanly. So check the page exists up front.
+fn check_page(document: &PdfDocument, page_index: u16) -> Result<(), Atom> {
+    if page_index < document.pages().len() {
+        Ok(())
+    } else {
+        Err(atoms::page_out_of_bounds())
+    }
+}
+
+// Add a freshly-built object to a page and commit the page content. Takes the
+// page by immutable document borrow (the object also borrows the document
+// immutably, so the two coexist; the mutation goes through the page handle).
+fn add_to_page(
+    document: &PdfDocument,
+    page_index: u16,
+    object: PdfPageObject,
+) -> Result<Atom, Atom> {
+    let mut page = document
+        .pages()
+        .get(page_index)
+        .map_err(|_| atoms::page_out_of_bounds())?;
+    page.objects_mut()
+        .add_object(object)
+        .map_err(|_| atoms::draw_failed())?;
+    page.regenerate_content()
+        .map_err(|_| atoms::draw_failed())?;
+    Ok(atoms::ok())
+}
+
+// Attach a freshly-built object to a page, THEN style it. Adding first makes the
+// object page-owned, so any fallible styling that follows (set_fill_color,
+// translate, set_bitmap, …) can't drop an orphaned, never-added object — which
+// crashes pdfium. (The returned object is page-owned, so dropping it is a no-op.)
+// Used for objects whose styling happens after construction (text, images);
+// shapes carry their styling in the constructor and use `add_to_page`.
+fn attach_then_style(
+    document: &PdfDocument,
+    page_index: u16,
+    object: PdfPageObject,
+    style: impl FnOnce(&mut PdfPageObject) -> Result<(), Atom>,
+) -> Result<Atom, Atom> {
+    let mut page = document
+        .pages()
+        .get(page_index)
+        .map_err(|_| atoms::page_out_of_bounds())?;
+    let mut added = page
+        .objects_mut()
+        .add_object(object)
+        .map_err(|_| atoms::draw_failed())?;
+    style(&mut added)?;
+    drop(added); // release the borrow (no-op for a page-owned object) before regen
+    page.regenerate_content()
+        .map_err(|_| atoms::draw_failed())?;
+    Ok(atoms::ok())
+}
+
+/// Document creation: a new, empty in-memory document.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_new() -> Result<ResourceArc<DocumentResource>, Atom> {
+    with_pdfium(|pdfium| {
+        let doc = pdfium
+            .create_new_pdf()
+            .map_err(|_| atoms::create_failed())?;
+        Ok(ResourceArc::new(DocumentResource {
+            doc: Mutex::new(Some(doc)),
+        }))
+    })
+}
+
+/// Document creation: add a blank page sized in points. `at` < 0 appends; otherwise
+/// the page is inserted at that 0-based index.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_add_page(
+    doc: ResourceArc<DocumentResource>,
+    width: f64,
+    height: f64,
+    at: i64,
+) -> Result<Atom, Atom> {
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        let size = PdfPagePaperSize::from_points(
+            PdfPoints::new(width as f32),
+            PdfPoints::new(height as f32),
+        );
+        if at < 0 {
+            document
+                .pages_mut()
+                .create_page_at_end(size)
+                .map_err(|_| atoms::create_failed())?;
+        } else {
+            let idx = u16::try_from(at).map_err(|_| atoms::page_out_of_bounds())?;
+            document
+                .pages_mut()
+                .create_page_at_index(size, idx)
+                .map_err(|_| atoms::page_out_of_bounds())?;
+        }
+        Ok(atoms::ok())
+    })
+}
+
+/// Document creation: draw text at `(x, y)` (PDF points, bottom-left origin).
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_draw_text(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    x: f64,
+    y: f64,
+    text: String,
+    font: String,
+    size: f64,
+    color: (u8, u8, u8, u8),
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    let builtin = font_builtin(&font).ok_or_else(atoms::unknown_font)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        check_page(document, index)?;
+        let token = document.fonts_mut().new_built_in(builtin);
+        let object = PdfPageTextObject::new(&*document, text, token, PdfPoints::new(size as f32))
+            .map_err(|_| atoms::draw_failed())?;
+        attach_then_style(document, index, object.into(), |obj| {
+            obj.set_fill_color(color_of(color))
+                .map_err(|_| atoms::draw_failed())?;
+            obj.translate(PdfPoints::new(x as f32), PdfPoints::new(y as f32))
+                .map_err(|_| atoms::draw_failed())
+        })
+    })
+}
+
+/// Document creation: draw a rectangle. `fill`/`stroke` are `(r,g,b,a)` or absent.
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_draw_rectangle(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    left: f64,
+    bottom: f64,
+    right: f64,
+    top: f64,
+    fill: Option<(u8, u8, u8, u8)>,
+    stroke: Option<(u8, u8, u8, u8)>,
+    stroke_width: f64,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        check_page(document, index)?;
+        let rect = PdfRect::new_from_values(bottom as f32, left as f32, top as f32, right as f32);
+        let object = PdfPagePathObject::new_rect(
+            &*document,
+            rect,
+            stroke.map(color_of),
+            stroke.map(|_| PdfPoints::new(stroke_width as f32)),
+            fill.map(color_of),
+        )
+        .map_err(|_| atoms::draw_failed())?;
+        add_to_page(document, index, object.into())
+    })
+}
+
+/// Document creation: draw a straight line (always stroked).
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_draw_line(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    stroke: (u8, u8, u8, u8),
+    stroke_width: f64,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        check_page(document, index)?;
+        let object = PdfPagePathObject::new_line(
+            &*document,
+            PdfPoints::new(x1 as f32),
+            PdfPoints::new(y1 as f32),
+            PdfPoints::new(x2 as f32),
+            PdfPoints::new(y2 as f32),
+            color_of(stroke),
+            PdfPoints::new(stroke_width as f32),
+        )
+        .map_err(|_| atoms::draw_failed())?;
+        add_to_page(document, index, object.into())
+    })
+}
+
+/// Document creation: draw a circle of `radius` centered at `(cx, cy)`.
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_draw_circle(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    fill: Option<(u8, u8, u8, u8)>,
+    stroke: Option<(u8, u8, u8, u8)>,
+    stroke_width: f64,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        check_page(document, index)?;
+        let object = PdfPagePathObject::new_circle_at(
+            &*document,
+            PdfPoints::new(cx as f32),
+            PdfPoints::new(cy as f32),
+            PdfPoints::new(radius as f32),
+            stroke.map(color_of),
+            stroke.map(|_| PdfPoints::new(stroke_width as f32)),
+            fill.map(color_of),
+        )
+        .map_err(|_| atoms::draw_failed())?;
+        add_to_page(document, index, object.into())
+    })
+}
+
+/// Document creation: place a decoded bitmap, scaled into the `[left,bottom,
+/// right,top]` rectangle. pdfium is BGR-ordered; an :rgba/:rgbx buffer is R/B
+/// swapped here so any `ExPdfium.Bitmap` works.
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_draw_image(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    data: Binary,
+    img_width: u32,
+    img_height: u32,
+    format: String,
+    left: f64,
+    bottom: f64,
+    right: f64,
+    top: f64,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    let (pdf_format, swap_rb) =
+        image_format(&format).ok_or_else(atoms::unsupported_image_format)?;
+    let expected = img_width as usize * img_height as usize * bytes_per_pixel(pdf_format);
+    if data.len() != expected {
+        return Err(atoms::bad_image_data());
+    }
+    let mut buffer = data.as_slice().to_vec();
+    if swap_rb {
+        // RGBA/RGBX -> BGRA/BGRx: swap the red and blue bytes of each pixel.
+        for pixel in buffer.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+    }
+
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        check_page(document, index)?;
+        let width = i32::try_from(img_width).map_err(|_| atoms::bad_image_data())?;
+        let height = i32::try_from(img_height).map_err(|_| atoms::bad_image_data())?;
+        // SAFETY: `buffer` is exactly width*height*bytes_per_pixel bytes (checked
+        // above) and outlives the bitmap; set_bitmap copies the pixels out.
+        let bitmap = unsafe {
+            PdfBitmap::from_bytes(width, height, pdf_format, &mut buffer, document.bindings())
+        }
+        .map_err(|_| atoms::image_failed())?;
+
+        let object = PdfPageImageObject::new(&*document).map_err(|_| atoms::draw_failed())?;
+        attach_then_style(document, index, object.into(), |obj| {
+            obj.as_image_object_mut()
+                .ok_or_else(atoms::draw_failed)?
+                .set_bitmap(&bitmap)
+                .map_err(|_| atoms::draw_failed())?;
+            // A fresh image object is a unit square at the origin; scale to the
+            // target size then translate to its bottom-left corner.
+            obj.scale((right - left) as f32, (top - bottom) as f32)
+                .map_err(|_| atoms::draw_failed())?;
+            obj.translate(PdfPoints::new(left as f32), PdfPoints::new(bottom as f32))
+                .map_err(|_| atoms::draw_failed())
+        })
     })
 }
 

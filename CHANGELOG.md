@@ -8,6 +8,14 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **Document creation** (write): build PDFs from scratch.
+  - `ExPdfium.new/0` (empty document) and `ExPdfium.add_page/3` (named sizes
+    `:letter`/`:a4`/… or `{w, h}` points; `at:` to insert).
+  - `ExPdfium.draw_text/5` (Standard-14 fonts, size, color), `draw_rectangle/4`,
+    `draw_line/5`, `draw_circle/5` (fill/stroke/width), and `draw_image/4` (place an
+    `ExPdfium.Bitmap`; pdfium is BGRA-native, so `:rgba`/`:rgbx` are R↔B swapped
+    automatically — any Bitmap from `render_page/3`, `image_data/3`, or Vix works).
+  - Coordinates are PDF points (origin bottom-left); colors are `{r,g,b}`/`{r,g,b,a}`.
 - **Comprehensive document metadata**: `ExPdfium.metadata/1` now also returns
   document-level properties alongside the `/Info` dictionary — `:version` (the PDF
   version, e.g. `"1.7"`, or `nil`), `:page_count`, and `:page_mode` (the catalog

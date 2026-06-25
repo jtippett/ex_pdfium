@@ -902,6 +902,215 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Creating: new/0 and add_page" do
+    test "creates an empty document and appends a sized page" do
+      assert {:ok, doc} = ExPdfium.new()
+      assert {:ok, 0} = ExPdfium.page_count(doc)
+      assert {:ok, ^doc} = ExPdfium.add_page(doc, :letter)
+      assert {:ok, 1} = ExPdfium.page_count(doc)
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      assert {:ok, %{width: 612.0, height: 792.0}} = ExPdfium.page_info(re, 0)
+    end
+
+    test "a custom page size in points" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, {200, 300})
+      assert {:ok, %{width: 200.0, height: 300.0}} = ExPdfium.page_info(doc, 0)
+    end
+
+    test "inserts a page at an index" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      {:ok, doc} = ExPdfium.add_page(doc, :a4, at: 0)
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+      {:ok, %{width: w}} = ExPdfium.page_info(doc, 0)
+      assert round(w) == 595
+    end
+
+    test "an out-of-range insert index appends (pdfium clamps)" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      assert {:ok, ^doc} = ExPdfium.add_page(doc, :a4, at: 99)
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+    end
+
+    test "an unrecognized page size is rejected" do
+      {:ok, doc} = ExPdfium.new()
+      assert {:error, :bad_page_size} = ExPdfium.add_page(doc, :a0)
+    end
+  end
+
+  describe "Creating: draw_text/5" do
+    test "draws text that round-trips through a save" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      assert {:ok, ^doc} =
+               ExPdfium.draw_text(doc, 0, {72, 700}, "Hello PDF",
+                 font: :helvetica_bold,
+                 size: 24,
+                 color: {10, 20, 30}
+               )
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      {:ok, text} = ExPdfium.extract_text(re, 0)
+      assert text =~ "Hello PDF"
+    end
+
+    test "an unknown font is rejected" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      assert {:error, :unknown_font} =
+               ExPdfium.draw_text(doc, 0, {10, 10}, "x", font: :comic_sans)
+    end
+
+    test "drawing on an out-of-range page" do
+      {:ok, doc} = ExPdfium.new()
+      assert {:error, :page_out_of_bounds} = ExPdfium.draw_text(doc, 0, {10, 10}, "x")
+    end
+
+    test "drawing on a closed document returns an error, not a crash" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.draw_text(doc, 0, {10, 10}, "x")
+    end
+
+    test "an explicit alpha channel in the color is accepted" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      assert {:ok, ^doc} =
+               ExPdfium.draw_text(doc, 0, {72, 700}, "translucent", color: {0, 0, 0, 128})
+    end
+  end
+
+  describe "Creating: shapes" do
+    test "draws shapes that come back as path objects" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      {:ok, doc} =
+        ExPdfium.draw_rectangle(doc, 0, %{left: 50, bottom: 600, right: 300, top: 700},
+          fill: {200, 200, 200},
+          stroke: {0, 0, 0},
+          stroke_width: 2
+        )
+
+      {:ok, doc} = ExPdfium.draw_line(doc, 0, {50, 590}, {300, 590}, stroke: {0, 0, 0})
+      {:ok, doc} = ExPdfium.draw_circle(doc, 0, {150, 500}, 40, fill: {255, 0, 0})
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      {:ok, objects} = ExPdfium.page_objects(re, 0)
+      assert Enum.count(objects, &(&1.type == :path)) >= 3
+    end
+  end
+
+  describe "Creating: draw_image/4" do
+    test "embeds an :rgba bitmap that round-trips via images/2" do
+      data = for _ <- 1..16, into: <<>>, do: <<255, 0, 0, 255>>
+      bmp = %ExPdfium.Bitmap{data: data, width: 4, height: 4, stride: 16, format: :rgba}
+
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      assert {:ok, ^doc} =
+               ExPdfium.draw_image(doc, 0, bmp,
+                 at: %{left: 100, bottom: 100, right: 300, top: 300}
+               )
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      assert {:ok, [img]} = ExPdfium.images(re, 0)
+      assert img.width == 4
+      assert img.height == 4
+    end
+
+    test "embeds a :bgra bitmap that round-trips via images/2" do
+      data = for _ <- 1..16, into: <<>>, do: <<0, 0, 255, 255>>
+      bmp = %ExPdfium.Bitmap{data: data, width: 4, height: 4, stride: 16, format: :bgra}
+
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      {:ok, doc} = ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 50, top: 50})
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      assert {:ok, [%{width: 4, height: 4}]} = ExPdfium.images(re, 0)
+    end
+
+    test "embeds a single-channel :gray bitmap" do
+      bmp = %ExPdfium.Bitmap{
+        data: :binary.copy(<<128>>, 16),
+        width: 4,
+        height: 4,
+        stride: 4,
+        format: :gray
+      }
+
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      {:ok, doc} = ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 40, top: 40})
+
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      assert {:ok, [%{width: 4, height: 4, bits_per_pixel: 8}]} = ExPdfium.images(re, 0)
+    end
+
+    test "drawing an image on a closed document returns an error, not a crash" do
+      bmp = %ExPdfium.Bitmap{
+        data: <<0, 0, 0, 255>>,
+        width: 1,
+        height: 1,
+        stride: 4,
+        format: :rgba
+      }
+
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      :ok = ExPdfium.close(doc)
+
+      assert {:error, :document_closed} =
+               ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 1, top: 1})
+    end
+
+    test "a bitmap whose buffer length doesn't match its dimensions is rejected" do
+      bmp = %ExPdfium.Bitmap{data: <<1, 2, 3>>, width: 4, height: 4, stride: 16, format: :rgba}
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      assert {:error, :bad_image_data} =
+               ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 50, top: 50})
+    end
+  end
+
+  describe "Creating: concurrency" do
+    test "draw/save on a shared created document stays consistent" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn i ->
+            {:ok, ^doc} = ExPdfium.draw_text(doc, 0, {72, rem(i * 7, 700) + 20}, "line #{i}")
+            {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+            byte_size(bytes) > 0
+          end,
+          max_concurrency: 16,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
+    end
+  end
+
   describe "Writing: save_to_bytes/1 and save_to_file/2" do
     test "round-trips a document through bytes" do
       {:ok, doc} = ExPdfium.open(@text)
