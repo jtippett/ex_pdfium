@@ -261,10 +261,31 @@ lock, no orphaned-object segfault path, no overflow/OOB/UB in the unsafe block o
 no uncapped/undocumented amplifying allocation. Review transcripts: /tmp/codex_review_r{1..5}.txt
 (not committed). 150 tests.
 
-### Remaining AFTER the sweep
-Annotation authoring (write — bigger surface, same native-object-lifetime care as
-creation). Form-filling explicitly NOT a priority. All v0.3 work is on main, unreleased
-— a 0.3.0 Hex release still needs a fresh go-ahead to tag/publish.
+### Annotation authoring DONE (commit a183d7d, CI green, 159 tests)
+Shipped: `add_text_annotation/5` (sticky note), `add_free_text_annotation/5`,
+`add_square_annotation/4`, `add_link_annotation/5`, `delete_annotation/3`. New
+"Annotating" hexdocs group, `examples/annotate.exs`, design doc at
+`docs/plans/2026-06-25-annotation-authoring-design.md`.
+- **Markup family DROPPED from 0.3 (user decision):** highlight/underline/strikeout/
+  squiggly attach + read back correctly but pdfium's own renderer won't show them
+  without an explicit `/AP` it doesn't auto-generate (verified: no render-delta even
+  after save/reopen; Square renders directly). Synthesizing the AP = re-opening the
+  page-object-on-annotation crash surface. Deferred.
+- **FreeText text color unavailable:** `FPDFAnnot_SetFontColor` is gated behind
+  pdfium-render `pdfium_7350`/`pdfium_future`; our `pdfium_latest` = `pdfium_7543`,
+  features are non-cumulative, so it's off. Text renders black; documented to use
+  `draw_text/5` for color.
+- **create_*_annotation attaches immediately** (FPDFPage_CreateAnnot) so the orphan-
+  build-then-drop crash class does NOT apply to annotations (unlike page objects).
+- **Formatter version skew bit twice:** local Elixir 1.20 vs CI 1.18 disagree on
+  line-length wrapping near 98 chars. Keep code lines < 98 or pre-wrap long
+  @specs/calls to the explicit multi-line form (both accept it). `mix format
+  --check-formatted` passing locally does NOT guarantee CI passes.
+
+### Remaining
+Form-filling explicitly NOT a priority. Markup-annotation family deferred (see above).
+All v0.3 work is on main, unreleased — a **0.3.0 Hex release still needs a fresh
+go-ahead to tag/publish** (the user is asking about release prep as of 2026-06-25).
 
 ### Latent note (still open, low priority)
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
