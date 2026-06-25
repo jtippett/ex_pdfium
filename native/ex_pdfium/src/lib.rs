@@ -170,6 +170,9 @@ mod atoms {
         bad_image_data,
         unsupported_image_format,
         draw_failed,
+        // annotation authoring
+        annotate_failed,
+        annotation_not_found,
         // flatten
         flatten_failed,
     }
@@ -2174,6 +2177,200 @@ fn document_draw_image(
             obj.translate(PdfPoints::new(left as f32), PdfPoints::new(bottom as f32))
                 .map_err(|_| atoms::draw_failed())
         })
+    })
+}
+
+// ── Annotation authoring ─────────────────────────────────────────────────────
+//
+// pdfium-render's `create_*_annotation` calls `FPDFPage_CreateAnnot`, which
+// attaches the annotation to the page immediately and then sets properties on the
+// attached handle — so there is no detached, never-added annotation to drop. The
+// orphan-build-then-drop crash class that affects page *objects* (see
+// `attach_then_style`) does not arise here.
+
+// Build a PdfRect from the (left, bottom, right, top) the Elixir side passes.
+fn annot_rect(l: f64, b: f64, r: f64, t: f64) -> PdfRect {
+    PdfRect::new_from_values(b as f32, l as f32, t as f32, r as f32)
+}
+
+/// Annotation authoring: a text (sticky-note) annotation at `(x, y)`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_add_text_annotation(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    x: f64,
+    y: f64,
+    text: String,
+    color: (u8, u8, u8, u8),
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let mut annotation = page
+            .annotations_mut()
+            .create_text_annotation(&text)
+            .map_err(|_| atoms::annotate_failed())?;
+        annotation
+            .set_position(PdfPoints::new(x as f32), PdfPoints::new(y as f32))
+            .map_err(|_| atoms::annotate_failed())?;
+        annotation
+            .set_fill_color(color_of(color))
+            .map_err(|_| atoms::annotate_failed())?;
+        Ok(atoms::ok())
+    })
+}
+
+/// Annotation authoring: a free-text (visible text box) annotation in `bounds`.
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_add_free_text_annotation(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    l: f64,
+    b: f64,
+    r: f64,
+    t: f64,
+    text: String,
+    fill: Option<(u8, u8, u8, u8)>,
+    stroke: Option<(u8, u8, u8, u8)>,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let mut annotation = page
+            .annotations_mut()
+            .create_free_text_annotation(&text)
+            .map_err(|_| atoms::annotate_failed())?;
+        annotation
+            .set_bounds(annot_rect(l, b, r, t))
+            .map_err(|_| atoms::annotate_failed())?;
+        if let Some(c) = fill {
+            annotation
+                .set_fill_color(color_of(c))
+                .map_err(|_| atoms::annotate_failed())?;
+        }
+        if let Some(c) = stroke {
+            annotation
+                .set_stroke_color(color_of(c))
+                .map_err(|_| atoms::annotate_failed())?;
+        }
+        Ok(atoms::ok())
+    })
+}
+
+/// Annotation authoring: a square (rectangle) annotation filling `bounds`.
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_add_square_annotation(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    l: f64,
+    b: f64,
+    r: f64,
+    t: f64,
+    fill: Option<(u8, u8, u8, u8)>,
+    stroke: Option<(u8, u8, u8, u8)>,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let mut annotation = page
+            .annotations_mut()
+            .create_square_annotation()
+            .map_err(|_| atoms::annotate_failed())?;
+        annotation
+            .set_bounds(annot_rect(l, b, r, t))
+            .map_err(|_| atoms::annotate_failed())?;
+        if let Some(c) = fill {
+            annotation
+                .set_fill_color(color_of(c))
+                .map_err(|_| atoms::annotate_failed())?;
+        }
+        if let Some(c) = stroke {
+            annotation
+                .set_stroke_color(color_of(c))
+                .map_err(|_| atoms::annotate_failed())?;
+        }
+        Ok(atoms::ok())
+    })
+}
+
+/// Annotation authoring: a link annotation over `bounds` opening `uri`.
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::too_many_arguments)]
+fn document_add_link_annotation(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    l: f64,
+    b: f64,
+    r: f64,
+    t: f64,
+    uri: String,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let mut annotation = page
+            .annotations_mut()
+            .create_link_annotation(&uri)
+            .map_err(|_| atoms::annotate_failed())?;
+        annotation
+            .set_bounds(annot_rect(l, b, r, t))
+            .map_err(|_| atoms::annotate_failed())?;
+        Ok(atoms::ok())
+    })
+}
+
+/// Annotation authoring: delete the annotation at 0-based `annot_index` on a page.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_delete_annotation(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    annot_index: u32,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    let annot_index = usize::try_from(annot_index).map_err(|_| atoms::annotation_not_found())?;
+    with_pdfium(|_| {
+        let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let annotations = page.annotations_mut();
+        if annot_index >= annotations.len() {
+            return Err(atoms::annotation_not_found());
+        }
+        // `get` returns a `PdfPageAnnotation<'a>` independent of the transient
+        // `&self` borrow, so it can be handed straight to `delete_annotation`
+        // (which re-borrows the collection mutably).
+        let annotation = annotations
+            .get(annot_index)
+            .map_err(|_| atoms::annotation_not_found())?;
+        annotations
+            .delete_annotation(annotation)
+            .map_err(|_| atoms::annotate_failed())?;
+        Ok(atoms::ok())
     })
 }
 

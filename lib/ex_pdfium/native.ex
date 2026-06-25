@@ -105,6 +105,21 @@ defmodule ExPdfium.Native do
   def document_draw_image(_doc, _page, _data, _w, _h, _fmt, _l, _b, _r, _t),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  # Annotation authoring.
+  def document_add_text_annotation(_doc, _page, _x, _y, _text, _color),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_add_free_text_annotation(_doc, _page, _l, _b, _r, _t, _text, _fill, _stroke),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_add_square_annotation(_doc, _page, _l, _b, _r, _t, _fill, _stroke),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_add_link_annotation(_doc, _page, _l, _b, _r, _t, _uri),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_delete_annotation(_doc, _page, _index), do: :erlang.nif_error(:nif_not_loaded)
+
   # Flatten & signatures.
   def document_flatten_page(_doc, _page), do: :erlang.nif_error(:nif_not_loaded)
   def document_flatten(_doc), do: :erlang.nif_error(:nif_not_loaded)

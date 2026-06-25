@@ -231,8 +231,29 @@ bitmap = %ExPdfium.Bitmap{data: pixels, width: w, height: h, stride: w * 4, form
 > `Vix.Vips.Operation.colourspace/2` and add an alpha band). `draw_image/4`
 > accepts `:rgba`, `:bgra`, `:bgrx`, `:bgr`, and `:gray`.
 
-Saving and assembly are the v0.3 write surface; form-filling and annotation
-authoring arrive in later 0.3.x releases.
+### Writing — annotations
+
+Author annotations on a page. Rectangles take a `bounds` map
+(`%{left:, bottom:, right:, top:}`, PDF points) — the same shape `annotations/2`
+reads back.
+
+```elixir
+# A sticky note (icon + popup text), a visible text box, a boxed callout, a link:
+{:ok, doc} = ExPdfium.add_text_annotation(doc, 0, {500, 720}, "Please review")
+{:ok, doc} = ExPdfium.add_free_text_annotation(doc, 0, %{left: 72, bottom: 690, right: 320, top: 715}, "DRAFT")
+{:ok, doc} = ExPdfium.add_square_annotation(doc, 0, %{left: 60, bottom: 540, right: 540, top: 660}, stroke: {220, 50, 50})
+{:ok, doc} = ExPdfium.add_link_annotation(doc, 0, %{left: 72, bottom: 510, right: 260, top: 525}, "https://hex.pm")
+
+{:ok, doc} = ExPdfium.delete_annotation(doc, 0, 0) # remove by 0-based page index
+```
+
+> The text-markup family (highlight/underline/strikeout/squiggly) is deferred:
+> pdfium's own renderer won't display them without an appearance stream it does
+> not auto-generate. FreeText renders its text in pdfium's default appearance
+> color (black); for colored text, use `draw_text/5`.
+
+Saving, assembly, and annotation authoring are the v0.3 write surface;
+form-filling and the text-markup annotation family arrive in later 0.3.x releases.
 
 ## Development
 

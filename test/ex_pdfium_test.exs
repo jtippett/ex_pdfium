@@ -1305,6 +1305,125 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Annotating: authoring" do
+    defp blank_page do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+      doc
+    end
+
+    defp pixels(doc) do
+      {:ok, bm} = ExPdfium.render_page(doc, 0, dpi: 72)
+      bm.data
+    end
+
+    test "add_text_annotation/5 creates a sticky note that reads back" do
+      doc = blank_page()
+      before = pixels(doc)
+
+      {:ok, doc} =
+        ExPdfium.add_text_annotation(doc, 0, {72, 700}, "Check this", color: {255, 0, 0})
+
+      {:ok, anns} = ExPdfium.annotations(doc, 0)
+      assert note = Enum.find(anns, &(&1.type == :text))
+      assert note.contents == "Check this"
+      # A note icon visibly draws on the page.
+      assert pixels(doc) != before
+    end
+
+    test "add_free_text_annotation/5 creates a visible text box" do
+      doc = blank_page()
+      before = pixels(doc)
+      bounds = %{left: 72, bottom: 650, right: 300, top: 700}
+
+      {:ok, doc} =
+        ExPdfium.add_free_text_annotation(doc, 0, bounds, "DRAFT", fill: {255, 255, 0})
+
+      {:ok, anns} = ExPdfium.annotations(doc, 0)
+      assert ft = Enum.find(anns, &(&1.type == :free_text))
+      assert ft.contents == "DRAFT"
+      assert pixels(doc) != before
+    end
+
+    test "add_square_annotation/4 draws a box" do
+      doc = blank_page()
+      before = pixels(doc)
+      bounds = %{left: 100, bottom: 500, right: 400, top: 650}
+
+      {:ok, doc} =
+        ExPdfium.add_square_annotation(doc, 0, bounds, fill: {0, 200, 255}, stroke: {0, 0, 0})
+
+      {:ok, anns} = ExPdfium.annotations(doc, 0)
+      assert Enum.find(anns, &(&1.type == :square))
+      assert pixels(doc) != before
+    end
+
+    test "add_link_annotation/5 attaches a clickable URI" do
+      doc = blank_page()
+      bounds = %{left: 72, bottom: 690, right: 300, top: 705}
+
+      {:ok, doc} =
+        ExPdfium.add_link_annotation(doc, 0, bounds, "https://example.com")
+
+      {:ok, links} = ExPdfium.links(doc, 0)
+      assert Enum.any?(links, &(&1.uri == "https://example.com"))
+    end
+
+    test "annotations persist across save/reopen" do
+      doc = blank_page()
+      {:ok, doc} = ExPdfium.add_text_annotation(doc, 0, {72, 700}, "kept", [])
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+
+      {:ok, re} = ExPdfium.open(bytes)
+      {:ok, anns} = ExPdfium.annotations(re, 0)
+      assert Enum.find(anns, &(&1.contents == "kept"))
+    end
+
+    test "delete_annotation/3 removes one annotation by index" do
+      doc = blank_page()
+      {:ok, doc} = ExPdfium.add_text_annotation(doc, 0, {72, 700}, "first", [])
+      {:ok, doc} = ExPdfium.add_square_annotation(doc, 0, %{left: 1, bottom: 1, right: 9, top: 9}, [])
+      {:ok, before} = ExPdfium.annotations(doc, 0)
+      assert length(before) == 2
+
+      {:ok, doc} = ExPdfium.delete_annotation(doc, 0, 0)
+      {:ok, after_} = ExPdfium.annotations(doc, 0)
+      assert length(after_) == 1
+      assert hd(after_).type == :square
+    end
+
+    test "delete_annotation/3 on an out-of-range index errors" do
+      doc = blank_page()
+      assert {:error, _} = ExPdfium.delete_annotation(doc, 0, 0)
+    end
+
+    test "authoring on an out-of-bounds page errors" do
+      doc = blank_page()
+      bounds = %{left: 0, bottom: 0, right: 10, top: 10}
+      assert {:error, :page_out_of_bounds} = ExPdfium.add_square_annotation(doc, 99, bounds, [])
+
+      assert {:error, :page_out_of_bounds} =
+               ExPdfium.add_text_annotation(doc, 99, {0, 0}, "x", [])
+    end
+
+    test "authoring is safe under concurrency" do
+      doc = blank_page()
+
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn i ->
+            b = %{left: 10, bottom: 10 + rem(i, 50), right: 100, top: 30 + rem(i, 50)}
+            match?({:ok, _}, ExPdfium.add_square_annotation(doc, 0, b, fill: {0, 200, 255}))
+          end,
+          max_concurrency: 16
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
+    end
+  end
+
   describe "Creating: concurrency" do
     test "draw/save on a shared created document stays consistent" do
       {:ok, doc} = ExPdfium.new()

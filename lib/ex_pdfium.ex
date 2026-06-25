@@ -12,8 +12,11 @@ defmodule ExPdfium do
   > **Write:** page assembly — merge (`append/2`), split/subset
   > (`extract_pages/2`), `delete_pages/2`, `rotate_page/3`; document creation —
   > `new/0`, `add_page/3`, and `draw_text`/`draw_rectangle`/`draw_line`/
-  > `draw_circle`/`draw_image`; and `save_to_bytes/1` / `save_to_file/2`.
-  > Form-filling and annotation authoring are arriving in later 0.3.x releases.
+  > `draw_circle`/`draw_image`; annotation authoring — `add_text_annotation/5`,
+  > `add_free_text_annotation/5`, `add_square_annotation/4`, `add_link_annotation/5`,
+  > `delete_annotation/3`; and `save_to_bytes/1` / `save_to_file/2`.
+  > Form-filling and the text-markup annotation family (highlight/underline/…) are
+  > arriving in later 0.3.x releases.
 
   > #### Untrusted input {: .warning}
   > pdfium runs **in-process** as a native library, so a genuine crash in it would
@@ -928,6 +931,112 @@ defmodule ExPdfium do
         t * 1.0
       )
     )
+  end
+
+  @doc group: :annotations
+  @doc """
+  Add a text (sticky-note) annotation at a point, in PDF points (bottom-left origin).
+
+  The note shows as an icon at `{x, y}`; `text` is its popup contents, returned by
+  `annotations/2` as `:contents`. `:color` (default `{255, 230, 0}`) sets the icon
+  color. Returns `{:ok, doc}`.
+  """
+  @spec add_text_annotation(Document.t(), non_neg_integer(), {number(), number()}, String.t(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def add_text_annotation(%Document{ref: ref} = doc, page, {x, y}, text, opts \\ []) do
+    color = normalize_color(Keyword.get(opts, :color, {255, 230, 0}))
+    wrap(doc, Native.document_add_text_annotation(ref, page, x * 1.0, y * 1.0, text, color))
+  end
+
+  @doc group: :annotations
+  @doc """
+  Add a free-text annotation: a visible text box inside `bounds`.
+
+  `bounds` is a `t:bounds/0` map (`%{left:, bottom:, right:, top:}`, PDF points).
+  `:fill` sets the box's interior background and `:stroke` its border (each a
+  color or `nil`, default `nil`). Returns `{:ok, doc}`.
+
+  > #### Text color {: .info}
+  >
+  > The text itself renders in pdfium's default appearance (black). Setting the
+  > FreeText font color needs an FFI entry point (`FPDFAnnot_SetFontColor`) that
+  > the bundled pdfium build does not expose, so no text-color option is offered.
+  > For colored text, draw it with `draw_text/5` instead.
+  """
+  @spec add_free_text_annotation(Document.t(), non_neg_integer(), bounds(), String.t(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def add_free_text_annotation(%Document{ref: ref} = doc, page, %{} = bounds, text, opts \\ []) do
+    %{left: l, bottom: b, right: r, top: t} = bounds
+
+    wrap(
+      doc,
+      Native.document_add_free_text_annotation(
+        ref,
+        page,
+        l * 1.0,
+        b * 1.0,
+        r * 1.0,
+        t * 1.0,
+        text,
+        normalize_color(Keyword.get(opts, :fill)),
+        normalize_color(Keyword.get(opts, :stroke))
+      )
+    )
+  end
+
+  @doc group: :annotations
+  @doc """
+  Add a square (rectangle) annotation filling `bounds`.
+
+  `bounds` is a `t:bounds/0` map (PDF points). `:fill` is the interior color
+  (default `nil`, transparent) and `:stroke` the border color (default
+  `{0, 0, 0}`). Returns `{:ok, doc}`.
+  """
+  @spec add_square_annotation(Document.t(), non_neg_integer(), bounds(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def add_square_annotation(%Document{ref: ref} = doc, page, %{} = bounds, opts \\ []) do
+    %{left: l, bottom: b, right: r, top: t} = bounds
+
+    wrap(
+      doc,
+      Native.document_add_square_annotation(
+        ref,
+        page,
+        l * 1.0,
+        b * 1.0,
+        r * 1.0,
+        t * 1.0,
+        normalize_color(Keyword.get(opts, :fill)),
+        normalize_color(Keyword.get(opts, :stroke, {0, 0, 0}))
+      )
+    )
+  end
+
+  @doc group: :annotations
+  @doc """
+  Add a link annotation covering `bounds` that opens `uri` when clicked.
+
+  `bounds` is a `t:bounds/0` map (PDF points). The link reads back via
+  `links/2`. Returns `{:ok, doc}`.
+  """
+  @spec add_link_annotation(Document.t(), non_neg_integer(), bounds(), String.t(), keyword()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def add_link_annotation(%Document{ref: ref} = doc, page, %{} = bounds, uri, _opts \\ []) do
+    %{left: l, bottom: b, right: r, top: t} = bounds
+    wrap(doc, Native.document_add_link_annotation(ref, page, l * 1.0, b * 1.0, r * 1.0, t * 1.0, uri))
+  end
+
+  @doc group: :annotations
+  @doc """
+  Delete the annotation at 0-based `index` on a 0-indexed page.
+
+  The index matches the order returned by `annotations/2`. Returns `{:ok, doc}`,
+  or `{:error, :annotation_not_found}` if the index is out of range.
+  """
+  @spec delete_annotation(Document.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, Document.t()} | {:error, atom()}
+  def delete_annotation(%Document{ref: ref} = doc, page, index) do
+    wrap(doc, Native.document_delete_annotation(ref, page, index))
   end
 
   @doc group: :writing

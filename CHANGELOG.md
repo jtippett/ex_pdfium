@@ -8,6 +8,16 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **Annotation authoring** (write): create annotations on a page.
+  - `ExPdfium.add_text_annotation/5` (sticky note: icon + popup contents),
+    `add_free_text_annotation/5` (a visible text box), `add_square_annotation/4`
+    (rectangle box with fill/stroke), and `add_link_annotation/5` (clickable URI).
+  - `ExPdfium.delete_annotation/3` removes an annotation by its 0-based page index.
+  - Rectangles take a `t:ExPdfium.bounds/0` map (`%{left:, bottom:, right:, top:}`),
+    matching what `annotations/2` reads back. The text-markup family
+    (highlight/underline/strikeout/squiggly) is intentionally deferred: pdfium's own
+    renderer does not display them without an explicit appearance stream it will not
+    auto-generate.
 - **Flatten** (write): `ExPdfium.flatten_page/2` and `flatten/1` bake a page's (or
   the whole document's) annotations and form fields into static page content, so
   they render identically everywhere and can no longer be edited as annotations.

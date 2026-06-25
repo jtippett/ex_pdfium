@@ -14,15 +14,34 @@ In scope:
 
 - **Text** (sticky note) — icon at a point + popup contents.
 - **FreeText** — a visible text box drawn on the page.
-- **Markup family over a rectangle** — highlight, underline, strikeout, squiggly.
 - **Square** — a rectangle box with fill/stroke.
 - **Link** — a clickable URI over a rectangle.
 - **Delete** — remove an annotation by its 0-based page index.
 
-Out of scope (deferred): **Ink** (freehand polylines — more complex input, lower
+Out of scope (deferred): **the text-markup family** (highlight, underline,
+strikeout, squiggly), **Ink** (freehand polylines — more complex input, lower
 demand), **Circle** (pdfium-render 0.8.37 exposes no `create_circle_annotation`,
 only `create_square_annotation`), **Popup/Stamp** authoring, and any form-field
 (widget) authoring (form-filling remains explicitly out of scope).
+
+### Why the markup family was dropped (decided 2026-06-25)
+
+pdfium attaches highlight/underline/strikeout/squiggly annotations correctly —
+they read back via `annotations/2` with the right type, bounds, and color, and
+are valid, portable PDFs. But **pdfium's own renderer does not display text-markup
+annotations without an explicit `/AP` appearance stream**, which pdfium does not
+auto-generate (verified empirically: no render delta even after a save/reopen
+round-trip, whereas Square renders directly). Conforming viewers (Acrobat,
+Preview, browsers) generate the appearance from the QuadPoints + color per
+PDF 32000-1 §12.5.6.10, but pdfium specifically requires the stream.
+
+The two ways to close that gap were both rejected for 0.3: documenting the
+self-render caveat (poor ergonomics — author a highlight, render a thumbnail, see
+nothing), and synthesizing the appearance by attaching a path object to each
+markup annotation (reintroduces the page-object-on-annotation crash surface the
+hardness sweep just closed, and amounts to us generating appearances rather than
+pdfium). The markup family is deferred until appearance generation can be solved
+cleanly. The other four types all render correctly in our own renderer.
 
 ## Why this is lower-risk than the draw primitives
 
@@ -53,11 +72,6 @@ add_free_text_annotation(doc, page_index, bounds, text, opts \\ [])
 #   (=`pdfium_7543`, which does not transitively enable `pdfium_7350`). We do not
 #   expose a text-color option we cannot honor.
 
-add_highlight_annotation(doc, page_index, bounds, opts \\ [])   # :color, default {255, 235, 60}
-add_underline_annotation(doc, page_index, bounds, opts \\ [])   # :color, default {0, 0, 0}
-add_strikeout_annotation(doc, page_index, bounds, opts \\ [])   # :color, default {0, 0, 0}
-add_squiggly_annotation(doc, page_index, bounds, opts \\ [])    # :color, default {0, 0, 0}
-
 add_square_annotation(doc, page_index, bounds, opts \\ [])      # :fill (default nil), :stroke (default {0,0,0})
 
 add_link_annotation(doc, page_index, bounds, uri, opts \\ [])
@@ -67,15 +81,6 @@ delete_annotation(doc, page_index, annot_index)                # 0-based index o
 
 ## Mapping notes (golden rule: follow pdfium-render, don't reinvent)
 
-- **Markup family positioning.** pdfium markup annotations render from
-  *attachment points* (quad points over the marked region), not just `/Rect`.
-  pdfium-render's own `create_highlight_annotation_over_object` is the canonical
-  recipe, and we follow it exactly: `set_position(left, bottom)`,
-  `set_stroke_color(color)`, then
-  `attachment_points_mut().create_attachment_point_at_end(rect)`. Without the
-  attachment point the annotation does not display. `attachment_points_mut` is an
-  inherent method present identically on all four markup types, so the NIF
-  dispatches on a subtype atom into four short, explicit arms.
 - **Square** uses `set_fill_color` (interior) + `set_stroke_color` (border) on
   the common annotation trait.
 - **Link** uses `set_link(uri)` plus `set_bounds`.
@@ -90,8 +95,6 @@ delete_annotation(doc, page_index, annot_index)                # 0-based index o
 
 - `document_add_text_annotation(ref, page, x, y, text, color)`
 - `document_add_free_text_annotation(ref, page, l, b, r, t, text, fill, stroke)`
-- `document_add_markup_annotation(ref, page, subtype, l, b, r, t, color)`
-  — `subtype` ∈ `:highlight | :underline | :strikeout | :squiggly`
 - `document_add_square_annotation(ref, page, l, b, r, t, fill, stroke)`
 - `document_add_link_annotation(ref, page, l, b, r, t, uri)`
 - `document_delete_annotation(ref, page, annot_index)`
