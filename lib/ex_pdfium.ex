@@ -700,6 +700,9 @@ defmodule ExPdfium do
   > that `page_info/2`'s `:width`/`:height` are already display-oriented, a
   > different frame from this matrix — easy to conflate.) Using the object matrix
   > alone will leave a `/Rotate`-rotated scan turned the wrong way.
+  >
+  > `object_display_matrix/3` does this composition for you, returning the
+  > content→display transform directly.
   """
   @spec images(Document.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, atom()}
   def images(%Document{ref: ref}, page_index) do
@@ -772,6 +775,49 @@ defmodule ExPdfium do
           {:ok, binary()} | {:error, atom()}
   def image_raw_data(%Document{ref: ref}, page_index, object_index),
     do: Native.document_image_raw_data(ref, page_index, object_index)
+
+  @doc group: :extraction
+  @doc """
+  The composed **content→display** transformation matrix for a 0-indexed object on
+  a 0-indexed page.
+
+  `page_objects/2` and `images/2` give an object's `:matrix` in the page's
+  *unrotated content space*. This composes that matrix with the page-level
+  `/Rotate` (from `page_info/2`), returning the single `t:matrix/0` that maps the
+  object's own space straight to **display** coordinates (origin bottom-left of the
+  page as shown, `y` up). `object_index` is the same index `page_objects/2` /
+  `images/2` report.
+
+  That is exactly the transform needed to orient an extracted image as it appears
+  on the page — e.g. to turn a native-resolution `image_raw_data/3` JPEG the right
+  way up for OCR — composing the object's own scale/rotation/flip with the page
+  rotation, without re-rendering.
+
+  This library deliberately does **not** rotate pixels for you (that is image
+  processing best left to your image pipeline); it hands you the transform as data.
+  Apply it in `Vix`/`Image`, or read the rotation off it (e.g. via `:b`/`:c`) to
+  pass an orientation hint to your OCR engine.
+
+  Returns `{:error, :object_not_found}` if there is no such object, or
+  `{:error, :no_matrix}` if pdfium could not report the object's matrix.
+
+  > #### Discrete page rotation only {: .info}
+  > The page-rotation part covers PDF `/Rotate` (0/90/180/270). Any sub-90°
+  > rotation or skew lives in the object matrix itself and is preserved exactly in
+  > the composition.
+  """
+  @spec object_display_matrix(Document.t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, matrix()} | {:error, atom()}
+  def object_display_matrix(%Document{} = doc, page_index, object_index) do
+    with {:ok, objects} <- page_objects(doc, page_index),
+         {:ok, obj} <- fetch_object(objects, object_index),
+         {:ok, info} <- page_info(doc, page_index) do
+      case obj.matrix do
+        nil -> {:error, :no_matrix}
+        m -> {:ok, compose_display_matrix(m, info)}
+      end
+    end
+  end
 
   @page_sizes %{
     letter: {612.0, 792.0},
@@ -1267,4 +1313,65 @@ defmodule ExPdfium do
 
   defp opt_matrix({a, b, c, d, e, f}),
     do: %{a: a, b: b, c: c, d: d, e: e, f: f}
+
+  defp fetch_object(objects, index) do
+    case Enum.find(objects, &(&1.index == index)) do
+      nil -> {:error, :object_not_found}
+      obj -> {:ok, obj}
+    end
+  end
+
+  # Compose an object's content-space matrix with the page's /Rotate to get the
+  # object→display transform. PDF matrices use the row-vector convention
+  # ([x y 1]·M), so the content→display product is `object · rotation`.
+  defp compose_display_matrix(m, info) do
+    {ox, oy, w, h} = content_box(info)
+    mat_to_map(mat_mul(map_to_mat(m), rotation_matrix(info.rotation, ox, oy, w, h)))
+  end
+
+  # The page's unrotated content box as {origin_x, origin_y, width, height}. The
+  # media box is already in content space; fall back to display dims un-swapped by
+  # the rotation when it's absent.
+  defp content_box(%{boxes: %{media: %{left: l, bottom: b, right: r, top: t}}}),
+    do: {l, b, r - l, t - b}
+
+  defp content_box(%{width: w, height: h, rotation: rot}) do
+    if rem(rot, 180) == 0, do: {0.0, 0.0, w, h}, else: {0.0, 0.0, h, w}
+  end
+
+  # Content→display rotation as a PDF matrix, for a content box at (ox, oy) of size
+  # (w, h). Translates the box origin to (0,0), then rotates clockwise by /Rotate so
+  # the result lands in the displayed page's positive quadrant. (Direction verified
+  # against a rendered, rotated page — see the test suite.)
+  defp rotation_matrix(rot, ox, oy, w, h) do
+    t = {1.0, 0.0, 0.0, 1.0, -ox, -oy}
+
+    rot =
+      case rem(rem(round(rot), 360) + 360, 360) do
+        0 -> {1.0, 0.0, 0.0, 1.0, 0.0, 0.0}
+        90 -> {0.0, -1.0, 1.0, 0.0, 0.0, w}
+        180 -> {-1.0, 0.0, 0.0, -1.0, w, h}
+        270 -> {0.0, 1.0, -1.0, 0.0, h, 0.0}
+        # Non-multiple-of-90 /Rotate is invalid per spec; treat as no rotation.
+        _ -> {1.0, 0.0, 0.0, 1.0, 0.0, 0.0}
+      end
+
+    mat_mul(t, rot)
+  end
+
+  defp map_to_mat(%{a: a, b: b, c: c, d: d, e: e, f: f}), do: {a, b, c, d, e, f}
+  defp mat_to_map({a, b, c, d, e, f}), do: %{a: a, b: b, c: c, d: d, e: e, f: f}
+
+  # Multiply two PDF matrices in the row-vector convention: result = A · B, so a
+  # point transformed by the result is `(p · A) · B`.
+  defp mat_mul({aa, ab, ac, ad, ae, af}, {ba, bb, bc, bd, be, bf}) do
+    {
+      aa * ba + ab * bc,
+      aa * bb + ab * bd,
+      ac * ba + ad * bc,
+      ac * bb + ad * bd,
+      ae * ba + af * bc + be,
+      ae * bb + af * bd + bf
+    }
+  end
 end

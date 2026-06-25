@@ -7,6 +7,16 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Added
+- **`ExPdfium.object_display_matrix/3`** (read): the composed **content→display**
+  transform for a page object — its content-space `:matrix` multiplied by the
+  page-level `/Rotate` — as a single `t:ExPdfium.matrix/0`. This is the transform
+  to orient an extracted image as it appears on the page (e.g. turn a native-res
+  `image_raw_data/3` JPEG the right way up for OCR) without re-rendering. The
+  library hands you the transform as **data** — it deliberately does not rotate
+  pixels (that belongs in your image pipeline). Pure Elixir; rotation direction is
+  verified against rendered pages for all of 0/90/180/270.
+
 ### Changed
 - **Clarified the `:matrix` orientation story** on `page_objects/2`, `images/2`,
   and `t:ExPdfium.matrix/0`: the matrix is in the page's **unrotated content

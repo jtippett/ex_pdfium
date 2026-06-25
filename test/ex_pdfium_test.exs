@@ -857,6 +857,66 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Reading: object_display_matrix/3" do
+    defp red_image_doc do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, {200, 400})
+      red = for _ <- 1..(40 * 40), into: <<>>, do: <<255, 0, 0, 255>>
+      bmp = %ExPdfium.Bitmap{data: red, width: 40, height: 40, stride: 40 * 4, format: :rgba}
+      # Placed at the content bottom-left corner: object matrix ~ {40,0,0,40,0,0}.
+      {:ok, doc} = ExPdfium.draw_image(doc, 0, bmp, at: %{left: 0, bottom: 0, right: 40, top: 40})
+      {:ok, [img]} = ExPdfium.images(doc, 0)
+      {doc, img}
+    end
+
+    # Centroid (x, y) of the strongly-red pixels in a rendered RGBA bitmap.
+    defp red_centroid(%ExPdfium.Bitmap{data: data, width: w}) do
+      reds =
+        for {{r, g, b}, i} <- Enum.with_index(for(<<r, g, b, _a <- data>>, do: {r, g, b})),
+            r > 200 and g < 80 and b < 80,
+            do: {rem(i, w), div(i, w)}
+
+      n = length(reds)
+      {sx, sy} = Enum.reduce(reds, {0, 0}, fn {x, y}, {ax, ay} -> {ax + x, ay + y} end)
+      {sx / n, sy / n}
+    end
+
+    test "with no page rotation it equals the object's own matrix" do
+      {doc, img} = red_image_doc()
+      {:ok, m} = ExPdfium.object_display_matrix(doc, 0, img.index)
+
+      for k <- [:a, :b, :c, :d, :e, :f] do
+        assert_in_delta(m[k], img.matrix[k], 0.01)
+      end
+    end
+
+    test "it composes every page /Rotate, matching where the image actually renders" do
+      for rot <- [0, 90, 180, 270] do
+        {doc, img} = red_image_doc()
+        {:ok, doc} = ExPdfium.rotate_page(doc, 0, rot)
+
+        {:ok, m} = ExPdfium.object_display_matrix(doc, 0, img.index)
+        # The image's unit-square centre, mapped to display PDF coords (y up):
+        cx = m.a * 0.5 + m.c * 0.5 + m.e
+        cy = m.b * 0.5 + m.d * 0.5 + m.f
+
+        # Render the rotated page (display-oriented) and find the red blob.
+        {:ok, render} = ExPdfium.render_page(doc, 0, dpi: 72)
+        {rx, ry} = red_centroid(render)
+
+        # Bitmap is top-left origin / y-down; display PDF is bottom-left / y-up.
+        assert_in_delta rx, cx, 8, "x mismatch at /Rotate #{rot}"
+        assert_in_delta ry, render.height - cy, 8, "y mismatch at /Rotate #{rot}"
+      end
+    end
+
+    test "errors on a missing object or page" do
+      {doc, _img} = red_image_doc()
+      assert {:error, :object_not_found} = ExPdfium.object_display_matrix(doc, 0, 999)
+      assert {:error, :page_out_of_bounds} = ExPdfium.object_display_matrix(doc, 9, 0)
+    end
+  end
+
   describe "Reading: image_data/3 (decoded pixels)" do
     test "returns a decoded bitmap for an image object" do
       {:ok, doc} = ExPdfium.open(@images)

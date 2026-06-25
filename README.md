@@ -160,9 +160,19 @@ The `:matrix` on each object/image is its `[a b c d e f]` transform, in the page
 **unrotated content space**. For an image it maps the unit square onto the page, so
 you can recover the transform baked into the object (scale, plus any object-level
 rotation/flip) without re-rendering. For the **as-displayed** orientation — e.g. a
-scanned page bound for OCR — compose it with `page_info/2`'s `:rotation`, which
-carries the page-level `/Rotate` the matrix does not. (`page_info/2`'s
-`:width`/`:height` are already display-oriented — a different frame from the matrix.)
+scanned page bound for OCR — it must be composed with the page-level `/Rotate`
+(which the content-space matrix does not carry):
+
+```elixir
+# The composed content→display transform, ready to orient an extracted image:
+{:ok, m} = ExPdfium.object_display_matrix(doc, 0, 2)
+# => %{a: ..., b: ..., c: ..., d: ..., e: ..., f: ...}
+```
+
+ExPdfium hands you the transform as **data** — it doesn't rotate pixels for you
+(that belongs in your image pipeline, e.g. Vix). If you'd rather compose it
+yourself, `page_info/2`'s `:rotation` is the page `/Rotate`, and its
+`:width`/`:height` are already display-oriented (a different frame from the matrix).
 
 ### Writing — page assembly
 
