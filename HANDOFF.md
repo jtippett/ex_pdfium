@@ -219,10 +219,32 @@ but wants extra crash-safety care. **A separate Codex deep-hardness sweep is pla
 AFTER the feature work** — keep the discipline tight (validate-before-mutate, no
 orphan drops, length-check all buffers) but the exhaustive hardening audit is a later pass.
 
-**Remaining roadmap (low-risk first; form-filling explicitly NOT a priority):** render
-refinements (clip/grayscale/thumbnails — pure read, lowest risk), flatten
-(`page.flatten()`), signatures (read), annotation authoring (write, bigger surface).
-All v0.3 work is on main, unreleased — a 0.3.0 Hex release still needs a fresh go-ahead.
+### Render refinements + thumbnails DONE (commit e0b57db)
+`render_page/3` gained `:grayscale`/`:annotations`/`:form_fields` toggles (a 4-tuple
+pdfium render-config pass-through); `thumbnails/2` is pure Elixir over `render_page/3`.
+Deferred: `clip`/region render — pdfium's clip MASKS not crops; proper region-crop
+needs a matrix render (do it right as a follow-up).
+
+### Flatten + signatures DONE (commit ca3554a, CI green, 142 tests)
+`flatten_page/2` + `flatten/1` (FLAT_PRINT; pdfium-render reloads the page after;
+nothing-to-flatten is a no-op — verified forms.pdf 7 annots → 0). `signatures/1`
+→ `%{reason, signing_date, bytes}` (raw PKCS#7; no signer name from pdfium; unsigned
+→ `{:ok, []}`). Both plain marshalling under the lock, no unsafe.
+
+### >>> PAUSE POINT: Codex deep-hardness sweep <<<
+The user planned a Codex deep-hardness sweep here, BEFORE annotation authoring and a
+0.3.0 release. Point Codex especially at the native surface: `native/ex_pdfium/src/lib.rs`
+— the one `unsafe` (`PdfBitmap::from_bytes` in `document_draw_image`), the
+orphaned-page-object crash class (`attach_then_style`/`check_page` — any other
+build-then-fail-before-add path is a VM segfault), the global `PDFIUM_LOCK` discipline,
+the deferred-GC cleanup thread, and the `Result<Atom,Atom>`→`{:ok,:ok}` marshalling.
+Reminder: a C++ crash in pdfium takes down the WHOLE BEAM (rustler contains Rust panics,
+NOT native segfaults).
+
+### Remaining AFTER the sweep
+Annotation authoring (write — bigger surface, same native-object-lifetime care as
+creation). Form-filling explicitly NOT a priority. All v0.3 work is on main, unreleased
+— a 0.3.0 Hex release still needs a fresh go-ahead to tag/publish.
 
 ### Latent note (still open, low priority)
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
