@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.3.1 - 2026-06-25
+
 ### Added
 - **Object transformation matrix** (read): `page_objects/2` and `images/2` now
   include a `:matrix` key — the object's `[a b c d e f]` transform as
