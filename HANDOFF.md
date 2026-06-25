@@ -231,15 +231,35 @@ nothing-to-flatten is a no-op — verified forms.pdf 7 annots → 0). `signature
 → `%{reason, signing_date, bytes}` (raw PKCS#7; no signer name from pdfium; unsigned
 → `{:ok, []}`). Both plain marshalling under the lock, no unsafe.
 
-### >>> PAUSE POINT: Codex deep-hardness sweep <<<
-The user planned a Codex deep-hardness sweep here, BEFORE annotation authoring and a
-0.3.0 release. Point Codex especially at the native surface: `native/ex_pdfium/src/lib.rs`
-— the one `unsafe` (`PdfBitmap::from_bytes` in `document_draw_image`), the
-orphaned-page-object crash class (`attach_then_style`/`check_page` — any other
-build-then-fail-before-add path is a VM segfault), the global `PDFIUM_LOCK` discipline,
-the deferred-GC cleanup thread, and the `Result<Atom,Atom>`→`{:ok,:ok}` marshalling.
-Reminder: a C++ crash in pdfium takes down the WHOLE BEAM (rustler contains Rust panics,
-NOT native segfaults).
+### Codex deep-hardness sweep DONE — CLEAR FOR DISPATCH (commits up to b2584d5, CI green)
+Ran the `codex-review-loop` skill, 5 rounds, converged to codex's "CLEAR FOR DISPATCH".
+Findings decayed cleanly (memory-safety → DoS → integer-overflow → 1 real bomb).
+Fixed (all with tests + new fixtures `huge_page.pdf`, `attachment_bomb.pdf`):
+- **R1 Blocker (real heap UB):** draw_image `unsafe PdfBitmap::from_bytes` passed a PACKED
+  buffer but pdfium uses a 4-byte-aligned row stride → overread for :gray/:bgr non-aligned
+  widths. Fix: repack to `align4(width*bpp)` stride. (Our tests only used aligned widths.)
+- **R1 High/Medium:** render dims uncapped (width 2^31 / dpi 1e100) → MAX_RENDER_* caps;
+  `pdfium_version/0` ran outside PDFIUM_LOCK → now locked.
+- **R2 High×2 (malformed-PDF alloc DoS):** render output derived from page MediaBox was
+  unbounded (40000×40000 MediaBox → multi-GB) → `estimated_pixels` area check before
+  pdfium allocates (MAX_BITMAP_PIXELS=100MP) + set_maximum_* backstop. image_data decoded
+  before bounding → declared-dim check. R2 Med/Low: extract_pages length pre-check;
+  draw_image input-dim cap (overflow).
+- **R3 High (integer overflow):** append/add_page could cross pdfium-render's u16 page
+  ceiling → guards (dest+src ≤ u16::MAX; reject full doc).
+- **R4 High (codex REFUTED my pushback with a real bomb):** attachment_data/2 is a
+  decompression bomb — 21KB PDF → 20MB decoded via save_to_bytes(). Fix: check
+  `attachment.len()` (cheap null-buffer call) > MAX_ATTACHMENT_BYTES=100MB before decode.
+Pushbacks codex ACCEPTED: image_raw_data/signatures/list-collectors are proportional-to-
+input (not amplification) — no caps; documented the untrusted-input stance (in-process VM,
+use OS limits + process isolation) in the moduledoc. Page-count u16 truncation (>65535-page
+docs) accepted as a pdfium-render limitation (handle is pub(crate); ops stay in-bounds) —
+documented on page_count/1.
+
+Threat model confirmed clean: no pdfium call outside the lock, no uncontained panic-under-
+lock, no orphaned-object segfault path, no overflow/OOB/UB in the unsafe block or size math,
+no uncapped/undocumented amplifying allocation. Review transcripts: /tmp/codex_review_r{1..5}.txt
+(not committed). 150 tests.
 
 ### Remaining AFTER the sweep
 Annotation authoring (write — bigger surface, same native-object-lifetime care as
