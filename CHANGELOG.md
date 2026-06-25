@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.3.3 - 2026-06-25
+
 ### Added
 - **`ExPdfium.Bitmap.to_vix/1`**: convert a `Bitmap` straight into a
   correctly-interpreted `Vix.Vips.Image` — it reads `format`, sets the band count,
