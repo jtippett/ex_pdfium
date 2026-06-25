@@ -356,6 +356,50 @@ defmodule ExPdfium do
 
   @doc group: :text
   @doc """
+  Return the page's text one **character** at a time, with per-glyph boxes.
+
+  Where `text_segments/2` gives line/phrase-level runs, this gives the underlying
+  glyphs — the primitive for layout analysis (line/word grouping, column detection,
+  reading order), where a run can be wider than a column gutter and merge columns.
+
+  Each element is:
+
+      %{
+        char: String.t(),       # the Unicode character (may be "" if pdfium has none)
+        bounds: t:bounds/0 | nil,
+        font_size: float()      # scaled font size, in points
+      }
+
+  Characters come in **content-stream order** — the same order as `extract_text/2`
+  — including the whitespace pdfium synthesizes between words. Those generated
+  spaces carry `bounds: nil` (or a degenerate box); use or skip them as you like.
+
+  `bounds` is pdfium's **loose** bound (the glyph advance cell), so per-line glyph
+  heights are consistent — what line/word grouping wants — falling back to the
+  tight (ink) bound, and `nil` when pdfium reports neither.
+
+  `font_size` is exposed because it's the standard signal for heading/title vs body
+  detection: a run-in heading at normal leading is otherwise indistinguishable from
+  body text by position alone.
+  """
+  @spec chars(Document.t(), non_neg_integer()) ::
+          {:ok, [%{char: String.t(), bounds: bounds() | nil, font_size: float()}]}
+          | {:error, atom()}
+  def chars(%Document{ref: ref}, page_index) do
+    case Native.document_text_chars(ref, page_index) do
+      {:ok, chars} ->
+        {:ok,
+         Enum.map(chars, fn {char, rect, size} ->
+           %{char: char, bounds: opt_rect(rect), font_size: size}
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc group: :text
+  @doc """
   Search a page for `query`, returning the matches.
 
   Each match is `%{text: String.t(), rects: [t:bounds/0]}` — a match can span more

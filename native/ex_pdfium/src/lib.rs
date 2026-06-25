@@ -890,6 +890,45 @@ fn document_text_segments(
     })
 }
 
+// (char, bounds, font_size): one entry per glyph in content-stream order. `bounds`
+// is the loose (advance-cell) box, or None when pdfium reports none; `font_size`
+// is the scaled font size in points.
+type TextChar = (String, Option<Rect>, f32);
+
+/// Char-level text extraction: every glyph on a page, in content-stream order.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_text_chars(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<Vec<TextChar>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let text = page.text().map_err(|_| atoms::text_failed())?;
+        let chars = text
+            .chars()
+            .iter()
+            .map(|ch| {
+                let s = ch.unicode_char().map(|c| c.to_string()).unwrap_or_default();
+                // loose_bounds = the glyph advance cell (stable per-line height,
+                // closest to pdfminer's LTChar bbox); fall back to tight if loose errors.
+                let bounds = ch
+                    .loose_bounds()
+                    .or_else(|_| ch.tight_bounds())
+                    .ok()
+                    .map(|r| rect_of(&r));
+                (s, bounds, ch.scaled_font_size().value)
+            })
+            .collect();
+        Ok(chars)
+    })
+}
+
 /// Phase 3: search a page. Each match carries its text and the bounding rects of
 /// the segments it spans (a match can wrap across lines).
 #[rustler::nif(schedule = "DirtyCpu")]

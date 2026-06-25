@@ -7,6 +7,16 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Added
+- **`ExPdfium.chars/2`** (read): char-level text extraction — every glyph on a
+  page as `%{char, bounds, font_size}`, in content-stream order (same as
+  `extract_text/2`). The primitive for layout analysis (line/word grouping, column
+  detection, reading order), where `text_segments/2`'s line/phrase runs are too
+  coarse and can span a column gutter. `bounds` is pdfium's loose (advance-cell)
+  box — consistent per-line heights — or `nil`; `font_size` is the scaled size in
+  points (the standard heading-vs-body signal). pdfium's synthesized inter-word
+  whitespace is included, with `bounds: nil` or a degenerate box.
+
 ## 0.3.3 - 2026-06-25
 
 ### Added

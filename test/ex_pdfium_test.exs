@@ -345,6 +345,49 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Phase 3: chars (char-level geometry)" do
+    setup do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, doc: doc}
+    end
+
+    test "chars/2 returns per-glyph char, bounds, and font size", %{doc: doc} do
+      assert {:ok, chars} = ExPdfium.chars(doc, 0)
+      assert chars != []
+
+      # Each entry has the documented shape.
+      for c <- chars do
+        assert is_binary(c.char)
+        assert is_float(c.font_size)
+        assert c.bounds == nil or match?(%{left: _, bottom: _, right: _, top: _}, c.bounds)
+      end
+
+      # A real glyph (non-whitespace) carries a positive box and font size.
+      glyph = Enum.find(chars, &(String.trim(&1.char) != "" and &1.bounds != nil))
+      assert glyph.font_size > 0
+      assert glyph.bounds.left < glyph.bounds.right
+      assert glyph.bounds.bottom < glyph.bounds.top
+    end
+
+    test "chars are in content-stream order (reconstruct extract_text)", %{doc: doc} do
+      {:ok, chars} = ExPdfium.chars(doc, 0)
+      {:ok, text} = ExPdfium.extract_text(doc, 0)
+      joined = chars |> Enum.map(& &1.char) |> Enum.join()
+      assert String.trim(joined) == String.trim(text)
+    end
+
+    test "a blank page has no chars" do
+      {:ok, blank} = ExPdfium.open(@sample)
+      assert {:ok, []} = ExPdfium.chars(blank, 0)
+    end
+
+    test "chars error cases", %{doc: doc} do
+      assert {:error, :page_out_of_bounds} = ExPdfium.chars(doc, 99)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.chars(doc, 0)
+    end
+  end
+
   describe "Phase 3: text search" do
     setup do
       {:ok, doc} = ExPdfium.open(@text)
