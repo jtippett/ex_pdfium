@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.3.0 - 2026-06-25
+
 ### Added
 - **Annotation authoring** (write): create annotations on a page.
   - `ExPdfium.add_text_annotation/5` (sticky note: icon + popup contents),
