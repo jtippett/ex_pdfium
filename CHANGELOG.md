@@ -8,6 +8,12 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **Flatten** (write): `ExPdfium.flatten_page/2` and `flatten/1` bake a page's (or
+  the whole document's) annotations and form fields into static page content, so
+  they render identically everywhere and can no longer be edited as annotations.
+- **Signatures** (read): `ExPdfium.signatures/1` returns the document's digital
+  signatures as `%{reason, signing_date, bytes}` (the raw PKCS#7 `/Contents`; the
+  signer identity lives inside `bytes`). Unsigned documents return `{:ok, []}`.
 - **Render refinements & thumbnails**:
   - `ExPdfium.render_page/3` gains `:grayscale`, `:annotations`, and `:form_fields`
     toggles (annotations/form fields render by default).

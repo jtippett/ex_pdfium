@@ -105,6 +105,11 @@ defmodule ExPdfium.Native do
   def document_draw_image(_doc, _page, _data, _w, _h, _fmt, _l, _b, _r, _t),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  # Flatten & signatures.
+  def document_flatten_page(_doc, _page), do: :erlang.nif_error(:nif_not_loaded)
+  def document_flatten(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_signatures(_doc), do: :erlang.nif_error(:nif_not_loaded)
+
   # v0.3 — writing: page assembly & save.
   def document_save(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_append(_dest, _src), do: :erlang.nif_error(:nif_not_loaded)

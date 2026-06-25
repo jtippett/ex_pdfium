@@ -369,6 +369,31 @@ defmodule ExPdfium do
     end
   end
 
+  @doc group: :metadata
+  @doc """
+  Read the document's digital signatures.
+
+  Each is `%{reason: String.t() | nil, signing_date: String.t() | nil, bytes:
+  binary()}` — the signature's `/Reason`, its date string, and the raw `/Contents`
+  (the PKCS#7/CMS signature blob). The **signer's identity and the signing
+  certificate live inside `bytes`** (a PKCS#7 structure); pdfium does not expose
+  them separately, so parse `bytes` with a CMS/PKCS#7 library if you need them.
+  An unsigned document returns `{:ok, []}`.
+  """
+  @spec signatures(Document.t()) :: {:ok, [map()]} | {:error, atom()}
+  def signatures(%Document{ref: ref}) do
+    case Native.document_signatures(ref) do
+      {:ok, sigs} ->
+        {:ok,
+         Enum.map(sigs, fn {reason, signing_date, bytes} ->
+           %{reason: reason, signing_date: signing_date, bytes: bytes}
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
   @doc group: :structure
   @doc """
   Return the document outline (bookmarks) as a nested tree.
@@ -986,6 +1011,26 @@ defmodule ExPdfium do
   def rotate_page(%Document{ref: ref} = doc, page_index, degrees)
       when is_integer(page_index) and page_index >= 0 and is_integer(degrees),
       do: wrap(doc, Native.document_rotate_page(ref, page_index, degrees))
+
+  @doc group: :writing
+  @doc """
+  Flatten a 0-indexed page's annotations and form fields into its static content.
+
+  After flattening, the annotation/form overlay is baked into the page and renders
+  identically everywhere (and can no longer be edited as annotations). pdfium uses
+  the *print* appearance. A page with nothing to flatten is a no-op. Mutates `doc`
+  in place; returns `{:ok, doc}`.
+  """
+  @spec flatten_page(Document.t(), non_neg_integer()) :: {:ok, Document.t()} | {:error, atom()}
+  def flatten_page(%Document{ref: ref} = doc, page_index),
+    do: wrap(doc, Native.document_flatten_page(ref, page_index))
+
+  @doc group: :writing
+  @doc """
+  Flatten every page (see `flatten_page/2`). Returns `{:ok, doc}`.
+  """
+  @spec flatten(Document.t()) :: {:ok, Document.t()} | {:error, atom()}
+  def flatten(%Document{ref: ref} = doc), do: wrap(doc, Native.document_flatten(ref))
 
   @doc group: :documents
   @doc """

@@ -168,6 +168,8 @@ mod atoms {
         bad_image_data,
         unsupported_image_format,
         draw_failed,
+        // flatten
+        flatten_failed,
     }
 }
 
@@ -2018,6 +2020,75 @@ fn document_draw_image(
             obj.translate(PdfPoints::new(left as f32), PdfPoints::new(bottom as f32))
                 .map_err(|_| atoms::draw_failed())
         })
+    })
+}
+
+// ── Flatten & signatures ─────────────────────────────────────────────────────
+
+/// Flatten a single page's annotations and form fields into its content stream
+/// (pdfium uses the print appearance). A page with nothing to flatten is a no-op.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_flatten_page(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        page.flatten().map_err(|_| atoms::flatten_failed())?;
+        Ok(atoms::ok())
+    })
+}
+
+/// Flatten every page (see `document_flatten_page`).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_flatten(doc: ResourceArc<DocumentResource>) -> Result<Atom, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let count = document.pages().len();
+        for i in 0..count {
+            let mut page = document
+                .pages()
+                .get(i)
+                .map_err(|_| atoms::page_out_of_bounds())?;
+            page.flatten().map_err(|_| atoms::flatten_failed())?;
+        }
+        Ok(atoms::ok())
+    })
+}
+
+// (reason, signing_date, contents): the signature's /Reason, /M date string, and
+// raw /Contents (PKCS#7) bytes. pdfium exposes no signer name (it lives inside
+// the PKCS#7 blob).
+type Signature<'a> = (Option<String>, Option<String>, Binary<'a>);
+
+/// Read the document's digital signatures.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_signatures(
+    env: Env<'_>,
+    doc: ResourceArc<DocumentResource>,
+) -> Result<Vec<Signature<'_>>, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let mut signatures = Vec::new();
+        for signature in document.signatures().iter() {
+            let bytes = signature.bytes();
+            let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
+            binary.as_mut_slice().copy_from_slice(&bytes);
+            signatures.push((
+                signature.reason(),
+                signature.signing_date(),
+                binary.release(env),
+            ));
+        }
+        Ok(signatures)
     })
 }
 

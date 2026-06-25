@@ -967,6 +967,51 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Editing: flatten" do
+    test "flatten_page bakes annotations into content, removing them" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:ok, annots} = ExPdfium.annotations(doc, 0)
+      assert annots != []
+
+      assert {:ok, ^doc} = ExPdfium.flatten_page(doc, 0)
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      {:ok, re} = ExPdfium.open(bytes)
+      # The annotations are now part of the page content, not annotation objects.
+      assert {:ok, []} = ExPdfium.annotations(re, 0)
+    end
+
+    test "flattening a page with nothing to flatten is a no-op" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, ^doc} = ExPdfium.flatten_page(doc, 0)
+    end
+
+    test "flatten/1 flattens every page" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:ok, ^doc} = ExPdfium.flatten(doc)
+    end
+
+    test "flatten errors on a bad page index and a closed document" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:error, :page_out_of_bounds} = ExPdfium.flatten_page(doc, 9)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.flatten_page(doc, 0)
+      assert {:error, :document_closed} = ExPdfium.flatten(doc)
+    end
+  end
+
+  describe "Reading: signatures/1" do
+    test "an unsigned document returns an empty list" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, []} = ExPdfium.signatures(doc)
+    end
+
+    test "signatures on a closed document" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.signatures(doc)
+    end
+  end
+
   describe "Creating: new/0 and add_page" do
     test "creates an empty document and appends a sized page" do
       assert {:ok, doc} = ExPdfium.new()
