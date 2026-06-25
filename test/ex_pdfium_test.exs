@@ -1382,7 +1382,10 @@ defmodule ExPdfiumTest do
     test "delete_annotation/3 removes one annotation by index" do
       doc = blank_page()
       {:ok, doc} = ExPdfium.add_text_annotation(doc, 0, {72, 700}, "first", [])
-      {:ok, doc} = ExPdfium.add_square_annotation(doc, 0, %{left: 1, bottom: 1, right: 9, top: 9}, [])
+
+      {:ok, doc} =
+        ExPdfium.add_square_annotation(doc, 0, %{left: 1, bottom: 1, right: 9, top: 9}, [])
+
       {:ok, before} = ExPdfium.annotations(doc, 0)
       assert length(before) == 2
 
