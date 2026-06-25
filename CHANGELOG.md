@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.4.0 - 2026-06-25
+
 ### Added
 - **`ExPdfium.chars/2`** (read): char-level text extraction — every glyph on a
   page as `%{char, bounds, font_size}`, in content-stream order (same as
