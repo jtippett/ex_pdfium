@@ -857,6 +857,48 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Bitmap.to_vix/1" do
+    # Convert a 1×N bitmap and read back its first pixel + shape.
+    defp px(data, w, h, stride, fmt) do
+      bmp = %ExPdfium.Bitmap{data: data, width: w, height: h, stride: stride, format: fmt}
+      {:ok, img} = ExPdfium.Bitmap.to_vix(bmp)
+      {Vix.Vips.Operation.getpoint!(img, 0, 0), Vix.Vips.Image.shape(img)}
+    end
+
+    test "reorders pdfium BGR into RGB, dropping the :bgrx padding byte" do
+      # B=10, G=20, R=30(, A=40) — all should read back R, G, B[, A].
+      assert {[30.0, 20.0, 10.0, 40.0], {1, 1, 4}} = px(<<10, 20, 30, 40>>, 1, 1, 4, :bgra)
+      assert {[30.0, 20.0, 10.0], {1, 1, 3}} = px(<<10, 20, 30>>, 1, 1, 3, :bgr)
+      # :bgrx — the 4th byte is padding and is dropped (3-band result).
+      assert {[30.0, 20.0, 10.0], {1, 1, 3}} = px(<<10, 20, 30, 99>>, 1, 1, 4, :bgrx)
+    end
+
+    test "passes :rgba and :gray through unchanged" do
+      assert {[30.0, 20.0, 10.0, 40.0], {1, 1, 4}} = px(<<30, 20, 10, 40>>, 1, 1, 4, :rgba)
+      assert {[99.0], {1, 1, 1}} = px(<<99>>, 1, 1, 1, :gray)
+    end
+
+    test "strips row stride padding" do
+      # width 1 :gray with a 4-byte aligned stride (3 padding bytes per row).
+      assert {[99.0], {1, 1, 1}} = px(<<99, 0, 0, 0>>, 1, 1, 4, :gray)
+    end
+
+    test "converts a real decoded image and writes a PNG" do
+      {:ok, doc} = ExPdfium.open(@images)
+      {:ok, [img | _]} = ExPdfium.images(doc, 0)
+      {:ok, bmp} = ExPdfium.image_data(doc, 0, img.index)
+
+      assert {:ok, vix} = ExPdfium.Bitmap.to_vix(bmp)
+      assert {w, h, _bands} = Vix.Vips.Image.shape(vix)
+      assert w == bmp.width and h == bmp.height
+
+      path = Path.join(System.tmp_dir!(), "ex_pdfium_to_vix_test.png")
+      assert :ok = Vix.Vips.Image.write_to_file(vix, path)
+      assert File.stat!(path).size > 0
+      File.rm(path)
+    end
+  end
+
   describe "Reading: object_display_matrix/3" do
     defp red_image_doc do
       {:ok, doc} = ExPdfium.new()

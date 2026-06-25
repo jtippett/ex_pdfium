@@ -8,6 +8,13 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **`ExPdfium.Bitmap.to_vix/1`**: convert a `Bitmap` straight into a
+  correctly-interpreted `Vix.Vips.Image` — it reads `format`, sets the band count,
+  reorders pdfium's native **BGR** order into **RGB** (`:bgr`/`:bgrx`/`:bgra`),
+  drops the `:bgrx` padding byte, and strips row-stride padding, so callers stop
+  branching on `.format` and getting the R↔B swap wrong. `Vix` is an **optional
+  dependency** (not pulled in transitively); without it the function returns
+  `{:error, :vix_not_loaded}`.
 - **`ExPdfium.bounds_to_pixels/3`** (read): convert any `t:ExPdfium.bounds/0`
   (PDF points, origin bottom-left, `y`-up) into raster pixel coordinates (origin
   top-left, `y`-down) at a given DPI — the points→pixels scale plus the Y-flip that

@@ -161,9 +161,13 @@ ExPdfium.bounds_to_pixels(hd(segments).bounds, h, 150)
 # => [%{index: 2, width: 800, height: 600, bits_per_pixel: 24, filters: ["DCTDecode"],
 #       bounds: %{...}, matrix: %{a: 800.0, b: 0.0, c: 0.0, d: 600.0, e: 40.0, f: 100.0}}]
 
-# Decoded pixels (native channel order — Vix-ready):
-{:ok, %ExPdfium.Bitmap{data: data, width: w, height: h, format: fmt}} =
-  ExPdfium.image_data(doc, 0, 2)              # fmt: :gray | :bgr | :bgrx | :bgra
+# Decoded pixels — native pdfium channel order (:gray | :bgr | :bgrx | :bgra):
+{:ok, bmp} = ExPdfium.image_data(doc, 0, 2)
+
+# Hand it to Vix without minding the format — to_vix/1 sets the band count and
+# swaps BGR→RGB for you (needs the optional :vix dep):
+{:ok, img} = ExPdfium.Bitmap.to_vix(bmp)
+:ok = Vix.Vips.Image.write_to_file(img, "image.png")
 
 # …or the original encoded stream (a DCTDecode image IS a .jpg):
 {:ok, jpg} = ExPdfium.image_raw_data(doc, 0, 2)

@@ -30,6 +30,7 @@ defmodule ExPdfium.MixProject do
     [
       {:rustler, "~> 0.38", optional: true},
       {:rustler_precompiled, "~> 0.8"},
+      {:vix, "~> 0.39", optional: true},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
   end
