@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.3.2 - 2026-06-25
+
 ### Added
 - **`ExPdfium.object_display_matrix/3`** (read): the composed **content→display**
   transform for a page object — its content-space `:matrix` multiplied by the
