@@ -107,6 +107,11 @@ defmodule ExPdfium do
   Other:
     * `:format` — `:rgba` (default) or `:bgra` (pdfium's native order, no conversion)
     * `:background` — `:white` (default) or `:transparent`
+    * `:grayscale` — render in grayscale (default `false`). The bitmap is still
+      4-channel; the color channels just carry equal gray values.
+    * `:annotations` — draw annotations (default `true`); set `false` to render the
+      page without its markup/widget overlay
+    * `:form_fields` — draw interactive form-field content (default `true`)
 
   ## Bitmap layout
 
@@ -132,6 +137,45 @@ defmodule ExPdfium do
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  @doc group: :rendering
+  @doc """
+  Render every page to a small bitmap, returned in page order.
+
+  Takes the same options as `render_page/3` (sizing, `:format`, `:grayscale`, …).
+  When no sizing option is given, sizing defaults to `width: 200`. A document with
+  no pages returns `{:ok, []}`; if any page fails to render, the first error is
+  returned.
+
+      {:ok, thumbs} = ExPdfium.thumbnails(doc, width: 160)
+      # => [%ExPdfium.Bitmap{...}, ...]   # one per page
+  """
+  @spec thumbnails(Document.t(), keyword()) :: {:ok, [Bitmap.t()]} | {:error, atom()}
+  def thumbnails(%Document{} = doc, opts \\ []) do
+    opts =
+      if Enum.any?([:width, :height, :scale, :dpi], &Keyword.has_key?(opts, &1)),
+        do: opts,
+        else: Keyword.put(opts, :width, 200)
+
+    with {:ok, count} <- page_count(doc) do
+      render_each_page(doc, count, opts)
+    end
+  end
+
+  defp render_each_page(_doc, 0, _opts), do: {:ok, []}
+
+  defp render_each_page(doc, count, opts) do
+    Enum.reduce_while(0..(count - 1), {:ok, []}, fn page, {:ok, acc} ->
+      case render_page(doc, page, opts) do
+        {:ok, bitmap} -> {:cont, {:ok, [bitmap | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, bitmaps} -> {:ok, Enum.reverse(bitmaps)}
+      {:error, _} = err -> err
     end
   end
 

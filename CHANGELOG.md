@@ -8,6 +8,11 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **Render refinements & thumbnails**:
+  - `ExPdfium.render_page/3` gains `:grayscale`, `:annotations`, and `:form_fields`
+    toggles (annotations/form fields render by default).
+  - `ExPdfium.thumbnails/2` renders one small `ExPdfium.Bitmap` per page (defaults
+    to `width: 200`), accepting the same options as `render_page/3`.
 - **Document creation** (write): build PDFs from scratch.
   - `ExPdfium.new/0` (empty document) and `ExPdfium.add_page/3` (named sizes
     `:letter`/`:a4`/… or `{w, h}` points; `at:` to insert).

@@ -902,6 +902,71 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Rendering: refinements" do
+    test ":grayscale renders equal color channels on a red page" do
+      {:ok, doc} = ExPdfium.open(@color)
+      {:ok, color} = ExPdfium.render_page(doc, 0, dpi: 72)
+      {:ok, gray} = ExPdfium.render_page(doc, 0, dpi: 72, grayscale: true)
+
+      <<r, g, b, _, _::binary>> = color.data
+      # The color render is genuinely red (R > B); grayscale equalizes the channels.
+      assert r > b
+      <<gr, gg, gb, _, _::binary>> = gray.data
+      assert gr == gg and gg == gb
+    end
+
+    test ":annotations false changes the output on a page with annotations" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      {:ok, with_annots} = ExPdfium.render_page(doc, 0, dpi: 72)
+      {:ok, without} = ExPdfium.render_page(doc, 0, dpi: 72, annotations: false)
+
+      assert {with_annots.width, with_annots.height} == {without.width, without.height}
+      # forms.pdf has a highlight annotation, so suppressing annotations differs.
+      assert with_annots.data != without.data
+    end
+
+    test ":form_fields false still renders a valid bitmap" do
+      {:ok, doc} = ExPdfium.open(@forms)
+
+      assert {:ok, %ExPdfium.Bitmap{data: data, width: w, height: h}} =
+               ExPdfium.render_page(doc, 0, dpi: 72, form_fields: false)
+
+      assert byte_size(data) == w * h * 4
+    end
+
+    test "a non-boolean toggle is rejected" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, grayscale: "yes")
+    end
+  end
+
+  describe "Rendering: thumbnails/2" do
+    test "renders one bitmap per page, defaulting to width 200" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, [a, b]} = ExPdfium.thumbnails(doc)
+      assert a.width == 200
+      assert b.width == 200
+      assert byte_size(a.data) == a.width * a.height * 4
+    end
+
+    test "passes sizing and other options through" do
+      {:ok, doc} = ExPdfium.open(@text)
+      assert {:ok, thumbs} = ExPdfium.thumbnails(doc, width: 64, grayscale: true)
+      assert Enum.all?(thumbs, &(&1.width == 64))
+    end
+
+    test "a document with no pages returns an empty list" do
+      {:ok, doc} = ExPdfium.new()
+      assert {:ok, []} = ExPdfium.thumbnails(doc)
+    end
+
+    test "a closed document returns an error" do
+      {:ok, doc} = ExPdfium.open(@text)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.thumbnails(doc)
+    end
+  end
+
   describe "Creating: new/0 and add_page" do
     test "creates an empty document and appends a sized page" do
       assert {:ok, doc} = ExPdfium.new()

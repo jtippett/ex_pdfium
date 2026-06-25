@@ -51,6 +51,9 @@ mod atoms {
         height,
         format,
         background,
+        grayscale,
+        annotations,
+        form_fields,
         // render: option values
         rgba,
         bgra,
@@ -513,6 +516,9 @@ struct RenderOpts {
     sizing: Sizing,
     format: Format,
     background: Background,
+    grayscale: bool,
+    annotations: bool,
+    form_fields: bool,
 }
 
 impl RenderOpts {
@@ -550,10 +556,19 @@ impl RenderOpts {
             Some(_) => return Err(atoms::unsupported_background()),
         };
 
+        // Toggles. pdfium renders annotations and form data by default, so those
+        // default to true; grayscale defaults to false.
+        let grayscale = opt_bool(opts, atoms::grayscale())?.unwrap_or(false);
+        let annotations = opt_bool(opts, atoms::annotations())?.unwrap_or(true);
+        let form_fields = opt_bool(opts, atoms::form_fields())?.unwrap_or(true);
+
         Ok(RenderOpts {
             sizing,
             format,
             background,
+            grayscale,
+            annotations,
+            form_fields,
         })
     }
 
@@ -590,6 +605,9 @@ impl RenderOpts {
         }
 
         config
+            .use_grayscale_rendering(self.grayscale)
+            .render_annotations(self.annotations)
+            .render_form_data(self.form_fields)
     }
 
     fn format_atom(&self) -> Atom {
@@ -613,6 +631,16 @@ fn opt_f64(opts: Term, key: Atom) -> Result<Option<f64>, Atom> {
             .or_else(|| t.decode::<i64>().ok().map(|i| i as f64))
             .map(Some)
             .ok_or_else(atoms::bad_option),
+    }
+}
+
+fn opt_bool(opts: Term, key: Atom) -> Result<Option<bool>, Atom> {
+    match opts.map_get(key) {
+        Err(_) => Ok(None),
+        Ok(t) => t
+            .decode::<bool>()
+            .map(Some)
+            .map_err(|_| atoms::bad_option()),
     }
 }
 

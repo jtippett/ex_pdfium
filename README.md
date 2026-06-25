@@ -60,8 +60,17 @@ Image.write(image, "page.png")
 ```
 
 `render_page/3` takes `:dpi` / `:scale` / `:width` / `:height` for sizing,
-`format: :rgba | :bgra`, and `background: :white | :transparent`. The bitmap is an
-uncompressed 4-channel buffer (`width * height * 4` bytes).
+`format: :rgba | :bgra`, `background: :white | :transparent`, plus `grayscale:`,
+`annotations:`, and `form_fields:` toggles. The bitmap is an uncompressed 4-channel
+buffer (`width * height * 4` bytes).
+
+```elixir
+# Suppress the annotation overlay, in grayscale:
+{:ok, bmp} = ExPdfium.render_page(doc, 0, dpi: 150, grayscale: true, annotations: false)
+
+# One small bitmap per page (defaults to width 200):
+{:ok, thumbs} = ExPdfium.thumbnails(doc, width: 160)
+```
 
 ### Text & search
 
