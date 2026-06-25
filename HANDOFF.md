@@ -161,11 +161,32 @@ type=/Subtype, bounds, contents, name=/NM, hidden, printed). 75 tests; CI green
 - `form_fields` 8 fields > rustler's 7-tuple limit → nested `(page, bounds)` as the
   7th element (same trick as `page_info`'s boxes tuple).
 
-**After Phase 6 the read-only scope (PORTING §3) is COMPLETE.** Remaining PORTING
-items (create/merge/split/save, form *filling*) are explicitly OUT OF SCOPE per
-the user's "A — Read & extract toolkit" decision. There is no Phase 7 planned; the
-natural next steps are polish/docs/`hex.publish` (publish still needs a fresh
-go-ahead) or — only if the user reopens scope — write/edit.
+**Read scope complete at v0.2.0 (on Hex).** v0.2.0 was published to Hex by the
+user (version bump + tag + release done between sessions). Docs were polished for
+Hex first (grouped API via `@doc group:` + `groups_for_docs`, hexdocs-link fixes,
+`mix hex.build` validated).
+
+### v0.3 — WRITE SCOPE REOPENED. Phase 1 (page assembly + save) DONE
+The user reopened write/edit at v0.3 ("we have the whole pdf exe sitting there").
+Design: `docs/plans/2026-06-25-write-tools-page-assembly-design.md`. Shipped
+(commit c717e93, CI green, 97 tests): `save_to_bytes/1`, `save_to_file/2` (Elixir =
+save_to_bytes + File.write, to keep disk IO off the global lock), `append/2`
+(merge), `extract_pages/2` (split/subset → new doc), `delete_pages/2` (int or
+unit-step inclusive range), `rotate_page/3`. In-place mutators return `{:ok, doc}`
+(same handle, chainable — the user's explicit pick over bare `:ok`); `extract_pages`
+returns `{:ok, new_doc}`. Write NIFs take `.as_mut()` ONLY where pdfium-render needs
+`&mut` (pages_mut().append); delete/rotate go through an owned PdfPage handle so
+`.as_ref()` suffices. Safety: `append(doc,doc)`→`:same_document` (ptr identity),
+validate-before-mutate, deleting all pages→`:cannot_delete_all_pages`, stepped/desc
+ranges→`:bad_range`. Gotchas: pdfium-render's `delete_page_range` is DEPRECATED (use
+`PdfPage::delete()` high→low); rustler `Result<Atom,Atom>` encodes `Ok(:ok)` as
+`{:ok,:ok}` (the `wrap/2` helper maps it). Moduledoc/README/PORTING reframed
+read→read+write.
+
+**Remaining v0.3.x write phases (each gated by an explicit go-ahead):** form-filling
+(set text/checkbox/radio; appearance-regeneration gotcha), annotation authoring
+(create/edit/delete), new-document creation + content drawing. Then a Hex release —
+publish still needs a fresh go-ahead.
 
 ### Latent note (still open, low priority)
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
