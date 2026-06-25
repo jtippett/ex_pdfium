@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.2.0 - 2026-06-25
+
 ### Added
 - Phase 6 — forms & annotations (read), completing the read-only scope:
   - `ExPdfium.form_type/1` → `:none` | `:acrobat` | `:xfa_full` | `:xfa_foreground`.
