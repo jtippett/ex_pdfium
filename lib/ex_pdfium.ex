@@ -941,8 +941,13 @@ defmodule ExPdfium do
   `annotations/2` as `:contents`. `:color` (default `{255, 230, 0}`) sets the icon
   color. Returns `{:ok, doc}`.
   """
-  @spec add_text_annotation(Document.t(), non_neg_integer(), {number(), number()}, String.t(), keyword()) ::
-          {:ok, Document.t()} | {:error, atom()}
+  @spec add_text_annotation(
+          Document.t(),
+          non_neg_integer(),
+          {number(), number()},
+          String.t(),
+          keyword()
+        ) :: {:ok, Document.t()} | {:error, atom()}
   def add_text_annotation(%Document{ref: ref} = doc, page, {x, y}, text, opts \\ []) do
     color = normalize_color(Keyword.get(opts, :color, {255, 230, 0}))
     wrap(doc, Native.document_add_text_annotation(ref, page, x * 1.0, y * 1.0, text, color))
@@ -963,8 +968,13 @@ defmodule ExPdfium do
   > the bundled pdfium build does not expose, so no text-color option is offered.
   > For colored text, draw it with `draw_text/5` instead.
   """
-  @spec add_free_text_annotation(Document.t(), non_neg_integer(), bounds(), String.t(), keyword()) ::
-          {:ok, Document.t()} | {:error, atom()}
+  @spec add_free_text_annotation(
+          Document.t(),
+          non_neg_integer(),
+          bounds(),
+          String.t(),
+          keyword()
+        ) :: {:ok, Document.t()} | {:error, atom()}
   def add_free_text_annotation(%Document{ref: ref} = doc, page, %{} = bounds, text, opts \\ []) do
     %{left: l, bottom: b, right: r, top: t} = bounds
 
@@ -1023,7 +1033,11 @@ defmodule ExPdfium do
           {:ok, Document.t()} | {:error, atom()}
   def add_link_annotation(%Document{ref: ref} = doc, page, %{} = bounds, uri, _opts \\ []) do
     %{left: l, bottom: b, right: r, top: t} = bounds
-    wrap(doc, Native.document_add_link_annotation(ref, page, l * 1.0, b * 1.0, r * 1.0, t * 1.0, uri))
+
+    wrap(
+      doc,
+      Native.document_add_link_annotation(ref, page, l * 1.0, b * 1.0, r * 1.0, t * 1.0, uri)
+    )
   end
 
   @doc group: :annotations
