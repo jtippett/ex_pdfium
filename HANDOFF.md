@@ -195,11 +195,34 @@ uses `get_raw_bitmap` (raw samples, masks/transforms NOT applied — documented)
 handle guard). Multi-image fixture (`images_gen.py`): RGB+gray FlateDecode + a real
 base64-embedded DCTDecode JPEG (ImageMagick-made once); deterministic.
 
-**Remaining roadmap (each gated by an explicit go-ahead):** the user steers by value
-— form-filling is explicitly NOT a priority. Candidates surfaced: render refinements
-(clip/grayscale/thumbnails/n-up), flatten, signatures (read); write-track phases
-(annotation authoring, new-doc creation). v0.3 work (page assembly + image extraction)
-is all on main, unreleased — a 0.3.0 Hex release still needs a fresh go-ahead to tag/publish.
+### Comprehensive metadata DONE (commit b64c0af)
+`metadata/1` now also returns `:version` (PDF version string), `:page_count`,
+`:page_mode` (catalog /PageMode atom). Honest ceiling documented: custom /Info keys
+and XMP are unreachable via pdfium.
+
+### Document creation DONE (commit 506a27d, CI green, 128 tests)
+`new/0`, `add_page/3` (named sizes/`{w,h}` points; `at:` inserts, clamps past end),
+`draw_text/5` (Standard-14 fonts), `draw_rectangle/4`, `draw_line/5`, `draw_circle/5`,
+`draw_image/4` (place an `ExPdfium.Bitmap`; pdfium is BGRA-native so `:rgba`/`:rgbx`
+are R↔B swapped). One reviewed `unsafe` (`PdfBitmap::from_bytes`; buffer length-checked,
+`set_bitmap` copies).
+**CRASH LESSON:** a built-but-never-added `PdfPageObject`, if dropped, SEGFAULTS the
+whole BEAM (C++ crash, not a catchable Rust panic). Fix = validate page up front
+(`check_page`) AND attach the object to the page BEFORE any fallible styling
+(`attach_then_style`) so a styling error can't orphan-drop. Shapes carry styling in
+the constructor → safe via `add_to_page`. See journal for the full reusable writeup.
+
+### Safety stance (user raised it, 2026-06-25)
+A genuine C++ crash in pdfium takes down the **entire BEAM VM** (NIFs are in-process;
+rustler contains Rust *panics* but not native segfaults). User accepts the NIF trade
+but wants extra crash-safety care. **A separate Codex deep-hardness sweep is planned
+AFTER the feature work** — keep the discipline tight (validate-before-mutate, no
+orphan drops, length-check all buffers) but the exhaustive hardening audit is a later pass.
+
+**Remaining roadmap (low-risk first; form-filling explicitly NOT a priority):** render
+refinements (clip/grayscale/thumbnails — pure read, lowest risk), flatten
+(`page.flatten()`), signatures (read), annotation authoring (write, bigger surface).
+All v0.3 work is on main, unreleased — a 0.3.0 Hex release still needs a fresh go-ahead.
 
 ### Latent note (still open, low priority)
 - **`set_dynamic_lib_dir/1` is silent if pdfium is already initialized.** It just
