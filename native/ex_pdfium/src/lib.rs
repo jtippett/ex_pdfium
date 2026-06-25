@@ -88,6 +88,48 @@ mod atoms {
         // structure & navigation
         attachment_not_found,
         attachment_failed,
+        // forms: form technology (FPDF_GetFormType)
+        none,
+        acrobat,
+        xfa_full,
+        xfa_foreground,
+        // form field types
+        text,
+        checkbox,
+        radio_button,
+        combo_box,
+        list_box,
+        push_button,
+        signature,
+        unknown,
+        // annotation types (PDF /Subtype)
+        link,
+        free_text,
+        line,
+        square,
+        circle,
+        polygon,
+        polyline,
+        highlight,
+        underline,
+        squiggly,
+        strikeout,
+        stamp,
+        caret,
+        ink,
+        popup,
+        file_attachment,
+        sound,
+        movie,
+        widget,
+        screen,
+        printer_mark,
+        trap_net,
+        watermark,
+        three_d,
+        rich_media,
+        xfa_widget,
+        redacted,
     }
 }
 
@@ -1012,6 +1054,203 @@ fn document_attachment_data<'a>(
         let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
         binary.as_mut_slice().copy_from_slice(&bytes);
         Ok(binary.release(env))
+    })
+}
+
+// ── Forms & annotations (read) ───────────────────────────────────────────────
+
+fn form_type_atom(t: PdfFormType) -> Atom {
+    match t {
+        PdfFormType::None => atoms::none(),
+        PdfFormType::Acrobat => atoms::acrobat(),
+        PdfFormType::XfaFull => atoms::xfa_full(),
+        PdfFormType::XfaForeground => atoms::xfa_foreground(),
+    }
+}
+
+fn form_field_type_atom(t: PdfFormFieldType) -> Atom {
+    match t {
+        PdfFormFieldType::Text => atoms::text(),
+        PdfFormFieldType::Checkbox => atoms::checkbox(),
+        PdfFormFieldType::RadioButton => atoms::radio_button(),
+        PdfFormFieldType::ComboBox => atoms::combo_box(),
+        PdfFormFieldType::ListBox => atoms::list_box(),
+        PdfFormFieldType::PushButton => atoms::push_button(),
+        PdfFormFieldType::Signature => atoms::signature(),
+        PdfFormFieldType::Unknown => atoms::unknown(),
+    }
+}
+
+fn annotation_type_atom(t: PdfPageAnnotationType) -> Atom {
+    match t {
+        PdfPageAnnotationType::Text => atoms::text(),
+        PdfPageAnnotationType::Link => atoms::link(),
+        PdfPageAnnotationType::FreeText => atoms::free_text(),
+        PdfPageAnnotationType::Line => atoms::line(),
+        PdfPageAnnotationType::Square => atoms::square(),
+        PdfPageAnnotationType::Circle => atoms::circle(),
+        PdfPageAnnotationType::Polygon => atoms::polygon(),
+        PdfPageAnnotationType::Polyline => atoms::polyline(),
+        PdfPageAnnotationType::Highlight => atoms::highlight(),
+        PdfPageAnnotationType::Underline => atoms::underline(),
+        PdfPageAnnotationType::Squiggly => atoms::squiggly(),
+        PdfPageAnnotationType::Strikeout => atoms::strikeout(),
+        PdfPageAnnotationType::Stamp => atoms::stamp(),
+        PdfPageAnnotationType::Caret => atoms::caret(),
+        PdfPageAnnotationType::Ink => atoms::ink(),
+        PdfPageAnnotationType::Popup => atoms::popup(),
+        PdfPageAnnotationType::FileAttachment => atoms::file_attachment(),
+        PdfPageAnnotationType::Sound => atoms::sound(),
+        PdfPageAnnotationType::Movie => atoms::movie(),
+        PdfPageAnnotationType::Widget => atoms::widget(),
+        PdfPageAnnotationType::Screen => atoms::screen(),
+        PdfPageAnnotationType::PrinterMark => atoms::printer_mark(),
+        PdfPageAnnotationType::TrapNet => atoms::trap_net(),
+        PdfPageAnnotationType::Watermark => atoms::watermark(),
+        PdfPageAnnotationType::ThreeD => atoms::three_d(),
+        PdfPageAnnotationType::RichMedia => atoms::rich_media(),
+        PdfPageAnnotationType::XfaWidget => atoms::xfa_widget(),
+        PdfPageAnnotationType::Redacted => atoms::redacted(),
+        PdfPageAnnotationType::Unknown => atoms::unknown(),
+    }
+}
+
+/// Phase 6: which interactive-form technology the document uses
+/// (`:none` | `:acrobat` | `:xfa_full` | `:xfa_foreground`). pdfium-render only
+/// surfaces a form (and its type) when one is present and non-empty, so an
+/// absent or empty form reports `:none`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_form_type(doc: ResourceArc<DocumentResource>) -> Result<Atom, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let t = match document.form() {
+            Some(form) => form_type_atom(form.form_type()),
+            None => atoms::none(),
+        };
+        Ok(t)
+    })
+}
+
+// (type, bounds, contents, name, hidden, printed). `type` is the PDF /Subtype;
+// `name` is the annotation's own /NM, not a form field name.
+type Annotation = (
+    Atom,
+    Option<Rect>,
+    Option<String>,
+    Option<String>,
+    bool,
+    bool,
+);
+
+/// Phase 6: annotations on a 0-indexed page, in page order. Widget annotations
+/// (form fields) are included alongside markup annotations.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_annotations(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+) -> Result<Vec<Annotation>, Atom> {
+    let index = page_index_u16(page_index)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let annotations = page
+            .annotations()
+            .iter()
+            .map(|a| {
+                (
+                    annotation_type_atom(a.annotation_type()),
+                    a.bounds().ok().map(|r| rect_of(&r)),
+                    a.contents(),
+                    a.name(),
+                    a.is_hidden(),
+                    a.is_printed(),
+                )
+            })
+            .collect();
+        Ok(annotations)
+    })
+}
+
+// (name, type, value, checked, read_only, required, (page, bounds)). The page +
+// bounds are nested to stay within rustler's 7-element tuple limit.
+type FormField = (
+    Option<String>,
+    Atom,
+    Option<String>,
+    Option<bool>,
+    bool,
+    bool,
+    (u32, Option<Rect>),
+);
+
+// Read a field's value the way pdfium-render models each type: text/combo/list
+// expose a string value; checkbox/radio expose an on-state name plus a checked
+// flag. We surface both rather than coercing a checkbox down to a string.
+// Push-button/signature/unknown carry no readable value.
+//
+// `is_checked()` can Err for a checkbox/radio whose state pdfium can't resolve;
+// we deliberately treat that as `false` (an unreadable toggle is reported as
+// not-checked rather than failing the whole field listing). `group_value()` for
+// these is the group's *selected* on-state, identical across the group's option
+// widgets — the per-option export name is not exposed by pdfium-render.
+fn form_field_value(
+    field: &PdfFormField,
+    field_type: PdfFormFieldType,
+) -> (Option<String>, Option<bool>) {
+    match field_type {
+        PdfFormFieldType::Text => (field.as_text_field().and_then(|f| f.value()), None),
+        PdfFormFieldType::ComboBox => (field.as_combo_box_field().and_then(|f| f.value()), None),
+        PdfFormFieldType::ListBox => (field.as_list_box_field().and_then(|f| f.value()), None),
+        PdfFormFieldType::Checkbox => match field.as_checkbox_field() {
+            Some(f) => (f.group_value(), Some(f.is_checked().unwrap_or(false))),
+            None => (None, None),
+        },
+        PdfFormFieldType::RadioButton => match field.as_radio_button_field() {
+            Some(f) => (f.group_value(), Some(f.is_checked().unwrap_or(false))),
+            None => (None, None),
+        },
+        PdfFormFieldType::PushButton | PdfFormFieldType::Signature | PdfFormFieldType::Unknown => {
+            (None, None)
+        }
+    }
+}
+
+/// Phase 6: AcroForm fields, one entry per widget annotation, across all pages.
+/// A checkbox or radio group shares its name across its option widgets, so it
+/// surfaces as one entry per option (distinguished by `value` / `checked`).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_form_fields(doc: ResourceArc<DocumentResource>) -> Result<Vec<FormField>, Atom> {
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+
+        let mut fields = Vec::new();
+        for (page_index, page) in document.pages().iter().enumerate() {
+            let page_index = u32::try_from(page_index).unwrap_or(0);
+            for annotation in page.annotations().iter() {
+                let Some(field) = annotation.as_form_field() else {
+                    continue;
+                };
+                let field_type = field.field_type();
+                let (value, checked) = form_field_value(field, field_type);
+                let bounds = annotation.bounds().ok().map(|r| rect_of(&r));
+                fields.push((
+                    field.name(),
+                    form_field_type_atom(field_type),
+                    value,
+                    checked,
+                    field.is_read_only(),
+                    field.is_required(),
+                    (page_index, bounds),
+                ));
+            }
+        }
+        Ok(fields)
     })
 }
 

@@ -8,6 +8,16 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- Phase 6 — forms & annotations (read), completing the read-only scope:
+  - `ExPdfium.form_type/1` → `:none` | `:acrobat` | `:xfa_full` | `:xfa_foreground`.
+  - `ExPdfium.form_fields/1` → AcroForm fields, one entry per widget across all
+    pages (`%{name, type, value, checked, read_only, required, page, bounds}`).
+    For checkbox/radio groups, `value` is the group's selected on-state and
+    `checked` flags the selected widget (pdfium does not expose per-option export
+    names). XFA form data is unavailable without a V8-enabled pdfium build.
+  - `ExPdfium.annotations/2` → a page's annotations, markup and widget alike
+    (`%{type, bounds, contents, name, hidden, printed}`; `type` is the PDF
+    `/Subtype`).
 - Phase 5 — structure & navigation:
   - `ExPdfium.outline/1` → the bookmark tree (`%{title, page, children}` nodes).
   - `ExPdfium.links/2` → a page's links (`%{bounds, uri, page}`; `uri` for web

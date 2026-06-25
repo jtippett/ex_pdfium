@@ -107,6 +107,25 @@ uncompressed 4-channel buffer (`width * height * 4` bytes).
 {:ok, bytes} = ExPdfium.attachment_data(doc, 0)
 ```
 
+### Forms & annotations (read)
+
+```elixir
+{:ok, :acrobat} = ExPdfium.form_type(doc)  # :none | :acrobat | :xfa_full | :xfa_foreground
+
+{:ok, fields} = ExPdfium.form_fields(doc)  # AcroForm fields, one per widget
+# => [%{name: "full_name", type: :text, value: "Ada Lovelace", checked: nil,
+#       read_only: false, required: false, page: 0, bounds: %{...}},
+#     %{name: "subscribe", type: :checkbox, value: "Yes", checked: true, ...}]
+
+{:ok, anns} = ExPdfium.annotations(doc, 0) # annotations on a page (markup + widgets)
+# => [%{type: :highlight, contents: "Important", bounds: %{...}, name: nil,
+#       hidden: false, printed: false}, ...]
+```
+
+> Reading is the whole scope — ExPdfium does not create, fill, or save PDFs.
+> XFA form data needs a V8-enabled pdfium build, which is not shipped; `:xfa_full`
+> documents may expose an empty or partial AcroForm view.
+
 ## Development
 
 The shipped NIF binds pdfium **dynamically** and loads a `libpdfium` bundled

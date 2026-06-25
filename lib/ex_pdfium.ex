@@ -5,11 +5,11 @@ defmodule ExPdfium do
   crate. The native library ships **precompiled** (`rustler_precompiled`), so
   there is no Rust toolchain or separately-installed pdfium to set up.
 
-  > #### Work in progress {: .info}
-  > Opening documents, page counts, rendering, text extraction/search, metadata,
-  > page geometry, permissions, and structure (bookmarks/links/attachments) work
-  > today. Read forms and annotations are landing phase by phase — see
-  > `PORTING.md`. Functions for unimplemented phases raise until then.
+  > #### Read-only toolkit {: .info}
+  > ExPdfium is a **read & extract** toolkit: open documents, page counts,
+  > rendering, text extraction/search, metadata, page geometry, permissions,
+  > structure (bookmarks/links/attachments), and forms/annotations (read). It
+  > does not create, edit, or save PDFs.
 
   ## Example
 
@@ -362,6 +362,120 @@ defmodule ExPdfium do
           {:ok, binary()} | {:error, atom()}
   def attachment_data(%Document{ref: ref}, index),
     do: Native.document_attachment_data(ref, index)
+
+  @doc """
+  Return which interactive-form technology the document uses.
+
+  One of `:none`, `:acrobat` (a classic AcroForm), `:xfa_full`, or
+  `:xfa_foreground` (XFA forms). A document with no form returns `{:ok, :none}`.
+
+  > #### XFA caveat {: .warning}
+  > Reading XFA form data requires a pdfium build with the V8 JavaScript engine,
+  > which ExPdfium does not ship. `form_fields/1` reads AcroForm fields; for an
+  > `:xfa_full` document the AcroForm view may be empty or partial.
+  """
+  @spec form_type(Document.t()) ::
+          {:ok, :none | :acrobat | :xfa_full | :xfa_foreground} | {:error, atom()}
+  def form_type(%Document{ref: ref}), do: Native.document_form_type(ref)
+
+  @doc """
+  Read the document's AcroForm fields, one entry per widget, across all pages.
+
+  Each field is:
+
+      %{
+        name: String.t() | nil,   # the field's /T name
+        type: :text | :checkbox | :radio_button | :combo_box | :list_box |
+              :push_button | :signature | :unknown,
+        value: String.t() | nil,  # text/combo/list value, or the selected on-state of a button group
+        checked: boolean() | nil, # checkbox/radio only; nil for other types
+        read_only: boolean(),
+        required: boolean(),
+        page: non_neg_integer(),  # 0-indexed page the widget sits on
+        bounds: t:bounds/0 | nil
+      }
+
+  A checkbox or radio group shares one `name` across its option widgets, so it
+  surfaces as **one entry per option widget**. For these, `value` is the group's
+  *currently-selected* on-state (the same string on every widget in the group),
+  and `checked` flags which widget is the selected one — so to find a radio
+  group's answer, take the `value` of the entry whose `checked` is `true`. A
+  document with no form returns `{:ok, []}`.
+
+  `value` and `checked` are read straight from pdfium without coercion: a
+  checked checkbox is `%{value: "Yes", checked: true}`, never flattened to a
+  string.
+
+  > #### Limitations {: .info}
+  > * This reads a group's *selected* value, not its available options — pdfium
+  >   does not expose per-option export names for checkbox/radio groups. A naive
+  >   `Map.new(fields, &{&1.name, &1.value})` collapses a group to one entry; to
+  >   find a group's answer, take the `value` of the entry whose `checked` is `true`.
+  > * A multi-select list box reports only pdfium's single `value` string, so
+  >   additional selections beyond the first are not surfaced.
+  """
+  @spec form_fields(Document.t()) :: {:ok, [map()]} | {:error, atom()}
+  def form_fields(%Document{ref: ref}) do
+    case Native.document_form_fields(ref) do
+      {:ok, fields} ->
+        {:ok,
+         Enum.map(fields, fn {name, type, value, checked, read_only, required, {page, bounds}} ->
+           %{
+             name: name,
+             type: type,
+             value: value,
+             checked: checked,
+             read_only: read_only,
+             required: required,
+             page: page,
+             bounds: opt_rect(bounds)
+           }
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Return the annotations on a 0-indexed page, in page order.
+
+  Each annotation is:
+
+      %{
+        type: atom(),                # the PDF /Subtype, e.g. :text, :highlight,
+                                     # :link, :widget, :ink, :stamp, :free_text…
+        bounds: t:bounds/0 | nil,    # the annotation rectangle, in PDF points
+        contents: String.t() | nil,  # the /Contents text
+        name: String.t() | nil,      # the annotation's /NM name (not a field name)
+        hidden: boolean(),
+        printed: boolean()
+      }
+
+  Widget annotations (form-field controls) are listed alongside markup
+  annotations; use `form_fields/1` to read their field values. A page with no
+  annotations returns `{:ok, []}`.
+  """
+  @spec annotations(Document.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, atom()}
+  def annotations(%Document{ref: ref}, page_index) do
+    case Native.document_annotations(ref, page_index) do
+      {:ok, anns} ->
+        {:ok,
+         Enum.map(anns, fn {type, bounds, contents, name, hidden, printed} ->
+           %{
+             type: type,
+             bounds: opt_rect(bounds),
+             contents: contents,
+             name: name,
+             hidden: hidden,
+             printed: printed
+           }
+         end)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
 
   @doc """
   Explicitly close a document, releasing pdfium memory early. Optional and

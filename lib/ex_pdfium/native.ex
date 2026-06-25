@@ -70,4 +70,9 @@ defmodule ExPdfium.Native do
   def document_links(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
   def document_attachments(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_attachment_data(_doc, _index), do: :erlang.nif_error(:nif_not_loaded)
+
+  # Phase 6 — forms & annotations (read).
+  def document_form_type(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_form_fields(_doc), do: :erlang.nif_error(:nif_not_loaded)
+  def document_annotations(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
 end

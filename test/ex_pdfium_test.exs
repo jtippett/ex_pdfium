@@ -9,6 +9,7 @@ defmodule ExPdfiumTest do
   @meta Path.join(@fixtures, "meta.pdf")
   @restricted Path.join(@fixtures, "restricted.pdf")
   @structure Path.join(@fixtures, "structure.pdf")
+  @forms Path.join(@fixtures, "forms.pdf")
 
   describe "Phase 0: the NIF loads and pdfium initializes" do
     test "pdfium_version/0 returns a string" do
@@ -571,6 +572,120 @@ defmodule ExPdfiumTest do
       :ok = ExPdfium.close(doc)
       assert {:error, :document_closed} = ExPdfium.attachments(doc)
       assert {:error, :document_closed} = ExPdfium.attachment_data(doc, 0)
+    end
+  end
+
+  describe "Phase 6: form type & fields" do
+    test "form_type/1 is :acrobat for an AcroForm document" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:ok, :acrobat} = ExPdfium.form_type(doc)
+    end
+
+    test "form_type/1 is :none for a document with no form" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, :none} = ExPdfium.form_type(doc)
+    end
+
+    test "form_fields/1 reads text, checkbox, and radio values" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:ok, fields} = ExPdfium.form_fields(doc)
+
+      by_name = fn name -> Enum.filter(fields, &(&1.name == name)) end
+
+      assert [full_name] = by_name.("full_name")
+      assert full_name.type == :text
+      assert full_name.value == "Ada Lovelace"
+      assert full_name.checked == nil
+      assert full_name.read_only == false
+      assert full_name.required == false
+      assert full_name.page == 0
+      assert %{left: 100.0, bottom: 700.0, right: 400.0, top: 720.0} = full_name.bounds
+
+      assert [comments] = by_name.("comments")
+      assert comments.type == :text
+      assert comments.value == nil
+
+      assert [subscribe] = by_name.("subscribe")
+      assert subscribe.type == :checkbox
+      assert subscribe.checked == true
+      assert subscribe.value == "Yes"
+
+      # A radio group surfaces one entry per option widget, all sharing the name.
+      # pdfium reports the group's *selected* value on every widget, so `value`
+      # is "pro" on both; `checked` flags which widget is the selected one.
+      plan = by_name.("plan")
+      assert length(plan) == 2
+      assert Enum.all?(plan, &(&1.type == :radio_button))
+      assert Enum.all?(plan, &(&1.value == "pro"))
+      assert Enum.count(plan, & &1.checked) == 1
+    end
+
+    test "form_fields/1 is empty for a document without a form" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, []} = ExPdfium.form_fields(doc)
+    end
+
+    test "form_type/1 and form_fields/1 on a closed document" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.form_type(doc)
+      assert {:error, :document_closed} = ExPdfium.form_fields(doc)
+    end
+  end
+
+  describe "Phase 6: annotations" do
+    test "annotations/2 lists widget, text, and highlight annotations" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:ok, anns} = ExPdfium.annotations(doc, 0)
+
+      assert Enum.count(anns, &(&1.type == :widget)) == 5
+
+      assert note = Enum.find(anns, &(&1.type == :text))
+      assert note.contents == "A reviewer note"
+      assert note.name == "note-1"
+      assert note.hidden == false
+      assert %{left: 500.0, top: 720.0} = note.bounds
+
+      assert hl = Enum.find(anns, &(&1.type == :highlight))
+      assert hl.contents == "Important passage"
+    end
+
+    test "annotations/2 is empty for a page with no annotations" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:ok, []} = ExPdfium.annotations(doc, 0)
+    end
+
+    test "annotations/2 out-of-bounds page" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:error, :page_out_of_bounds} = ExPdfium.annotations(doc, 99)
+    end
+
+    test "annotations/2 on a closed document" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      :ok = ExPdfium.close(doc)
+      assert {:error, :document_closed} = ExPdfium.annotations(doc, 0)
+    end
+  end
+
+  describe "Phase 6: concurrency" do
+    test "form_type/form_fields/annotations are safe under concurrency" do
+      {:ok, doc} = ExPdfium.open(@forms)
+
+      ok? =
+        1..100
+        |> Task.async_stream(
+          fn _ ->
+            {:ok, :acrobat} = ExPdfium.form_type(doc)
+            {:ok, fields} = ExPdfium.form_fields(doc)
+            {:ok, anns} = ExPdfium.annotations(doc, 0)
+            length(fields) == 5 and length(anns) == 7
+          end,
+          max_concurrency: 32,
+          ordered: false
+        )
+        |> Enum.all?(fn {:ok, v} -> v end)
+
+      assert ok?
     end
   end
 
