@@ -62,8 +62,10 @@ defmodule ExPdfium do
   Open a PDF from a file path or an in-memory binary.
 
   A binary beginning with `"%PDF"` is treated as document bytes; any other binary
-  is treated as a file path. (A few PDFs carry junk bytes before the header; pass
-  those as an explicit path, or strip the leading bytes.)
+  is treated as a file path. The heuristic is ambiguous at the edges (a PDF with
+  junk bytes before the header reads as a path; a path that somehow starts with
+  `"%PDF"` reads as bytes) — use `open_file/2` or `open_blob/2` when the source
+  kind is known.
 
   ## Options
     * `:password` — password for an encrypted PDF (default `nil`)
@@ -86,6 +88,28 @@ defmodule ExPdfium do
 
   def open(path, opts) when is_binary(path),
     do: do_open({:path, path}, opts)
+
+  @doc group: :documents
+  @doc """
+  Open a PDF from a file path, with no source-kind guessing.
+
+  The explicit counterpart to `open/2` for a path (same `:password` option and
+  errors). Use this when the argument is always a path — including a path that
+  might begin with `"%PDF"`, which `open/2` would misread as document bytes.
+  """
+  @spec open_file(Path.t(), keyword()) :: {:ok, Document.t()} | {:error, atom()}
+  def open_file(path, opts \\ []) when is_binary(path), do: do_open({:path, path}, opts)
+
+  @doc group: :documents
+  @doc """
+  Open a PDF from an in-memory binary, with no source-kind guessing.
+
+  The explicit counterpart to `open/2` for document bytes (same `:password` option
+  and errors). Use this when the argument is always PDF data — including data with
+  junk bytes before the `%PDF` header, which `open/2` would misread as a path.
+  """
+  @spec open_blob(binary(), keyword()) :: {:ok, Document.t()} | {:error, atom()}
+  def open_blob(bytes, opts \\ []) when is_binary(bytes), do: do_open({:binary, bytes}, opts)
 
   defp do_open(source, opts) do
     case Native.document_open(source, opts[:password]) do
@@ -244,6 +268,52 @@ defmodule ExPdfium do
           f: float()
         }
 
+  @doc group: :metadata
+  @doc """
+  Convert a `t:bounds/0` rectangle (PDF points, origin bottom-left, `y` up) into
+  **raster pixel** coordinates (origin top-left, `y` down) at the given DPI.
+
+  Every spatial result in this library — `text_segments/2`, `search_text/3`,
+  `links/2`, `annotations/2`, `images/2` bounds — is in PDF points. Overlaying any
+  of them on a page rastered at some DPI needs the same per-box conversion, and the
+  **Y-flip is the step everyone forgets**:
+
+      px = pt_x * dpi / 72
+      py = (page_height - pt_y) * dpi / 72   # the flip
+
+  `page_height` is the page height in points (from `page_info/2`'s `:height`). DPI
+  defaults to `72` (1 point = 1 pixel). Returns a map with raster-sense keys
+  `%{left, top, right, bottom}` (floats; `top < bottom`), aligned with how image
+  libraries address pixels:
+
+      {:ok, %{height: h}} = ExPdfium.page_info(doc, 0)
+      {:ok, segs} = ExPdfium.text_segments(doc, 0)
+      box = ExPdfium.bounds_to_pixels(hd(segs).bounds, h, 150)
+      # => %{left: 120.0, top: 95.0, right: 360.0, bottom: 130.0}  # pixels @150dpi
+
+  > #### Assumes an unrotated page {: .info}
+  > This applies only the points→pixels scale and the Y-flip. If the page has a
+  > `/Rotate` (see `page_info/2`), the rastered image is rotated but these bounds
+  > are in unrotated content space, so you must also account for the rotation —
+  > the same y-up/raster seam as `object_display_rotation/3`.
+  """
+  @spec bounds_to_pixels(bounds(), number(), number()) :: %{
+          left: float(),
+          top: float(),
+          right: float(),
+          bottom: float()
+        }
+  def bounds_to_pixels(%{left: l, bottom: b, right: r, top: t}, page_height, dpi \\ 72) do
+    s = dpi / 72
+
+    %{
+      left: l * s,
+      right: r * s,
+      top: (page_height - t) * s,
+      bottom: (page_height - b) * s
+    }
+  end
+
   @doc group: :text
   @doc """
   Extract the plain text of a 0-indexed page.
@@ -327,7 +397,7 @@ defmodule ExPdfium do
         # /Info dictionary — each key always present, absent fields nil
         title: "…", author: "…", subject: nil, keywords: nil,
         creator: "…", producer: "…",
-        creation_date: "D:20240115120000Z",  # raw PDF date string
+        creation_date: "D:20240115120000Z",  # raw PDF date string — parse_pdf_date/1
         modification_date: nil,
         # document-level properties — always present
         version: "1.7",                       # PDF version, or nil if undeclared
@@ -361,6 +431,39 @@ defmodule ExPdfium do
         err
     end
   end
+
+  @doc group: :metadata
+  @doc """
+  Parse a PDF date string (as `metadata/1` returns) into a `DateTime`.
+
+  PDF dates look like `"D:20210812004758+01'00'"` —
+  `D:YYYYMMDDHHmmSS` followed by a timezone (`Z`, or `±HH'mm'`). Everything after
+  the year is optional and defaults to its lowest value (month/day `01`, time
+  `00:00:00`, offset UTC). The result is normalized to **UTC**; a missing offset is
+  treated as UTC.
+
+      {:ok, ~U[2021-08-11 23:47:58Z]} = ExPdfium.parse_pdf_date("D:20210812004758+01'00'")
+      {:ok, meta} = ExPdfium.metadata(doc)
+      {:ok, created} = ExPdfium.parse_pdf_date(meta.creation_date)
+
+  Returns `{:error, :invalid_date}` for `nil`, an unparseable string, or
+  out-of-range components.
+  """
+  @spec parse_pdf_date(String.t() | nil) :: {:ok, DateTime.t()} | {:error, :invalid_date}
+  def parse_pdf_date("D:" <> rest), do: parse_pdf_date(rest)
+
+  def parse_pdf_date(str) when is_binary(str) do
+    re =
+      ~r/^\s*(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?(?:([Zz+\-])(\d{2})?'?(\d{2})?'?)?/
+
+    case Regex.run(re, str) do
+      # Regex.run drops trailing groups that didn't participate; pad back to 9.
+      [_ | parts] -> build_pdf_datetime(parts ++ List.duplicate("", 9 - length(parts)))
+      nil -> {:error, :invalid_date}
+    end
+  end
+
+  def parse_pdf_date(_), do: {:error, :invalid_date}
 
   @doc group: :metadata
   @doc """
@@ -1421,6 +1524,36 @@ defmodule ExPdfium do
     r = :math.fmod(deg, 360.0)
     if r < 0.0, do: r + 360.0, else: r
   end
+
+  # Build a UTC DateTime from PDF-date regex parts [Y, Mo, D, H, Mi, S, sign, OH, OM]
+  # (unmatched optional groups are ""). The naive local time is shifted to UTC by
+  # its offset; a missing offset is treated as UTC.
+  defp build_pdf_datetime([y, mo, d, h, mi, s, sign, oh, om]) do
+    with {:ok, naive} <-
+           NaiveDateTime.new(
+             to_int(y, 0),
+             to_int(mo, 1),
+             to_int(d, 1),
+             to_int(h, 0),
+             to_int(mi, 0),
+             to_int(s, 0)
+           ) do
+      offset = pdf_offset_seconds(sign, oh, om)
+      {:ok, DateTime.add(DateTime.from_naive!(naive, "Etc/UTC"), -offset, :second)}
+    else
+      _ -> {:error, :invalid_date}
+    end
+  end
+
+  defp to_int("", default), do: default
+  defp to_int(s, _default), do: String.to_integer(s)
+
+  defp pdf_offset_seconds(sign, oh, om) when sign in ["+", "-"] do
+    secs = to_int(oh, 0) * 3600 + to_int(om, 0) * 60
+    if sign == "-", do: -secs, else: secs
+  end
+
+  defp pdf_offset_seconds(_sign, _oh, _om), do: 0
 
   # Multiply two PDF matrices in the row-vector convention: result = A · B, so a
   # point transformed by the result is `(p · A) · B`.

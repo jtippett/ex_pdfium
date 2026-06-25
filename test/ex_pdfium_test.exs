@@ -1768,4 +1768,79 @@ defmodule ExPdfiumTest do
       assert ok?
     end
   end
+
+  describe "Ergonomics: bounds_to_pixels/3" do
+    test "scales and Y-flips PDF points into raster pixels" do
+      bounds = %{left: 100, bottom: 700, right: 200, top: 750}
+
+      # dpi 72 → 1pt == 1px; only the Y-flip happens (page height 792).
+      assert %{left: 100.0, right: 200.0, top: 42.0, bottom: 92.0} =
+               ExPdfium.bounds_to_pixels(bounds, 792, 72)
+
+      # dpi 144 → 2× scale on every axis.
+      assert %{left: 200.0, right: 400.0, top: 84.0, bottom: 184.0} =
+               ExPdfium.bounds_to_pixels(bounds, 792, 144)
+
+      # default dpi is 72.
+      assert ExPdfium.bounds_to_pixels(bounds, 792) ==
+               ExPdfium.bounds_to_pixels(bounds, 792, 72)
+    end
+
+    test "round-trips a real page's text segment box" do
+      {:ok, doc} = ExPdfium.open(@text)
+      {:ok, %{height: h}} = ExPdfium.page_info(doc, 0)
+      {:ok, [seg | _]} = ExPdfium.text_segments(doc, 0)
+      px = ExPdfium.bounds_to_pixels(seg.bounds, h, 150)
+      # top is above bottom in raster (y-down) space, and all within the raster.
+      assert px.top < px.bottom
+      assert px.left < px.right
+      assert px.bottom <= h * 150 / 72
+    end
+  end
+
+  describe "Documents: open_file/2 and open_blob/2" do
+    test "open_file/2 opens a path, open_blob/2 opens bytes" do
+      assert {:ok, _} = ExPdfium.open_file(@sample)
+      assert {:ok, bytes} = File.read(@sample)
+      assert {:ok, doc} = ExPdfium.open_blob(bytes)
+      assert {:ok, n} = ExPdfium.page_count(doc)
+      assert n > 0
+    end
+
+    test "the explicit variants don't guess source kind" do
+      # Bytes handed to open_file/2 are treated as a path → not found.
+      {:ok, bytes} = File.read(@sample)
+      assert {:error, _} = ExPdfium.open_file(bytes)
+      # A path handed to open_blob/2 is treated as bytes → not a PDF.
+      assert {:error, :invalid_pdf} = ExPdfium.open_blob(@sample)
+    end
+  end
+
+  describe "Metadata: parse_pdf_date/1" do
+    test "parses a full date with a positive offset, normalized to UTC" do
+      assert {:ok, dt} = ExPdfium.parse_pdf_date("D:20210812004758+01'00'")
+      assert dt == ~U[2021-08-11 23:47:58Z]
+    end
+
+    test "parses Z, negative offsets, and truncated forms" do
+      assert {:ok, ~U[2024-01-15 12:00:00Z]} = ExPdfium.parse_pdf_date("D:20240115120000Z")
+      assert {:ok, ~U[2021-08-12 05:47:58Z]} = ExPdfium.parse_pdf_date("D:20210812004758-05'00'")
+      # Missing offset → treated as UTC; truncated → lowest defaults.
+      assert {:ok, ~U[2024-03-04 09:00:00Z]} = ExPdfium.parse_pdf_date("D:20240304090000")
+      assert {:ok, ~U[2024-01-01 00:00:00Z]} = ExPdfium.parse_pdf_date("D:2024")
+    end
+
+    test "round-trips a real document's creation_date" do
+      {:ok, doc} = ExPdfium.open(@meta)
+      {:ok, %{creation_date: raw}} = ExPdfium.metadata(doc)
+      assert is_binary(raw)
+      assert {:ok, %DateTime{}} = ExPdfium.parse_pdf_date(raw)
+    end
+
+    test "errors on nil or garbage" do
+      assert {:error, :invalid_date} = ExPdfium.parse_pdf_date(nil)
+      assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("not a date")
+      assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("D:20241399000000")
+    end
+  end
 end

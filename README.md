@@ -87,12 +87,25 @@ buffer (`width * height * 4` bytes).
 # => [%{text: "Invoice", rects: [%{left: ..., bottom: ..., right: ..., top: ...}]}, ...]
 ```
 
+Every spatial result above is in **PDF points** (origin bottom-left, *y*-up). To
+overlay a box on a page you rastered at some DPI, `bounds_to_pixels/3` does the
+scale and the *y*-flip (the step everyone forgets):
+
+```elixir
+{:ok, %{height: h}} = ExPdfium.page_info(doc, 0)
+ExPdfium.bounds_to_pixels(hd(segments).bounds, h, 150)
+# => %{left: 87.3, top: 197.9, right: 185.4, bottom: 244.4}   # raster pixels @150dpi
+```
+
 ### Metadata, geometry & permissions
 
 ```elixir
 {:ok, meta} = ExPdfium.metadata(doc)
 # => %{title: "…", author: "…", creation_date: "D:…", producer: "…",
 #      version: "1.7", page_count: 12, page_mode: :none, ...}  # /Info + doc properties
+
+# PDF date strings → a UTC DateTime:
+{:ok, ~U[2021-08-11 23:47:58Z]} = ExPdfium.parse_pdf_date(meta.creation_date)
 
 {:ok, info} = ExPdfium.page_info(doc, 0)
 # => %{width: 612.0, height: 792.0, rotation: 0, label: nil,

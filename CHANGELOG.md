@@ -8,6 +8,20 @@ not pdfium-render's).
 ## [Unreleased]
 
 ### Added
+- **`ExPdfium.bounds_to_pixels/3`** (read): convert any `t:ExPdfium.bounds/0`
+  (PDF points, origin bottom-left, `y`-up) into raster pixel coordinates (origin
+  top-left, `y`-down) at a given DPI — the points→pixels scale plus the Y-flip that
+  every overlay of `text_segments/2`/`search_text/3`/`links/2`/`annotations/2`/
+  `images/2` boxes needs and that is easy to get silently wrong. Returns
+  `%{left, top, right, bottom}` in pixels.
+- **`ExPdfium.open_file/2` and `ExPdfium.open_blob/2`** (read): explicit
+  path-only / bytes-only document openers, removing the source-kind guessing
+  `open/2`'s `"%PDF"` heuristic does (which is ambiguous for PDFs with junk bytes
+  before the header, or paths that begin with `"%PDF"`). `open/2` stays as the
+  convenience.
+- **`ExPdfium.parse_pdf_date/1`** (read): parse a PDF date string (as `metadata/1`
+  returns, e.g. `"D:20210812004758+01'00'"`) into a UTC `DateTime`. Handles `Z` /
+  `±HH'mm'` offsets and truncated forms; `{:error, :invalid_date}` otherwise.
 - **`ExPdfium.object_display_rotation/3`** (read): the clockwise rotation in
   degrees to apply to an extracted image in a **top-left-origin raster library**
   (Vix/libvips, Pillow, ImageMagick) so it appears upright as displayed —
