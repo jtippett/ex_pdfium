@@ -351,7 +351,7 @@ defmodule ExPdfiumTest do
       {:ok, doc: doc}
     end
 
-    test "chars/2 returns per-glyph char, bounds, and font size", %{doc: doc} do
+    test "chars/2 returns per-glyph char, bounds, font size, and origin", %{doc: doc} do
       assert {:ok, chars} = ExPdfium.chars(doc, 0)
       assert chars != []
 
@@ -360,6 +360,9 @@ defmodule ExPdfiumTest do
         assert is_binary(c.char)
         assert is_float(c.font_size)
         assert c.bounds == nil or match?(%{left: _, bottom: _, right: _, top: _}, c.bounds)
+        assert c.origin == nil or match?(%{x: x, y: y} when is_float(x) and is_float(y), c.origin)
+        # Default path is lean: no style sub-map unless asked for.
+        refute Map.has_key?(c, :style)
       end
 
       # A real glyph (non-whitespace) carries a positive box and font size.
@@ -367,6 +370,18 @@ defmodule ExPdfiumTest do
       assert glyph.font_size > 0
       assert glyph.bounds.left < glyph.bounds.right
       assert glyph.bounds.bottom < glyph.bounds.top
+    end
+
+    test "origin is the glyph's pen position: x at the left edge, y on the baseline",
+         %{doc: doc} do
+      {:ok, chars} = ExPdfium.chars(doc, 0)
+      glyph = Enum.find(chars, &(String.trim(&1.char) != "" and &1.bounds != nil and &1.origin))
+
+      # The baseline (origin.y) lies within the glyph's vertical advance cell.
+      assert glyph.bounds.bottom <= glyph.origin.y
+      assert glyph.origin.y <= glyph.bounds.top
+      # The pen origin (origin.x) starts at the left of the advance cell.
+      assert_in_delta glyph.origin.x, glyph.bounds.left, 1.0
     end
 
     test "chars are in content-stream order (reconstruct extract_text)", %{doc: doc} do
@@ -385,6 +400,42 @@ defmodule ExPdfiumTest do
       assert {:error, :page_out_of_bounds} = ExPdfium.chars(doc, 99)
       :ok = ExPdfium.close(doc)
       assert {:error, :document_closed} = ExPdfium.chars(doc, 0)
+    end
+
+    test "chars/3 with style: true adds a best-effort style sub-map", %{doc: doc} do
+      assert {:ok, chars} = ExPdfium.chars(doc, 0, style: true)
+      glyph = Enum.find(chars, &(String.trim(&1.char) != ""))
+
+      # Style is present and well-shaped on every char when requested.
+      for c <- chars do
+        assert match?(
+                 %{
+                   font_name: _,
+                   weight: _,
+                   bold?: _,
+                   italic?: _,
+                   serif?: _,
+                   fixed_pitch?: _
+                 },
+                 c.style
+               )
+
+        assert is_binary(c.style.font_name)
+        assert c.style.weight == nil or is_integer(c.style.weight)
+        assert is_boolean(c.style.bold?)
+        assert is_boolean(c.style.italic?)
+        assert is_boolean(c.style.serif?)
+        assert is_boolean(c.style.fixed_pitch?)
+      end
+
+      # The geometry fields are still there alongside style.
+      assert is_float(glyph.font_size)
+      assert match?(%{x: _, y: _}, glyph.origin)
+    end
+
+    test "style: false (the default) omits the style sub-map", %{doc: doc} do
+      {:ok, chars} = ExPdfium.chars(doc, 0, style: false)
+      assert Enum.all?(chars, &(not Map.has_key?(&1, :style)))
     end
   end
 

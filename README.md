@@ -82,10 +82,16 @@ buffer (`width * height * 4` bytes).
 {:ok, segments} = ExPdfium.text_segments(doc, 0)
 # => [%{text: "Hello", bounds: %{left: 41.9, bottom: 115.2, right: 89.0, top: 137.5}}, ...]
 
-# Per-character boxes + font size — the primitive for layout analysis
-# (line/word grouping, column detection), where runs are too coarse:
+# Per-character boxes, font size + baseline origin — the primitive for layout
+# analysis (line/word grouping, column detection), where runs are too coarse:
 {:ok, chars} = ExPdfium.chars(doc, 0)
-# => [%{char: "H", bounds: %{...}, font_size: 12.0}, ...]   # content-stream order
+# => [%{char: "H", bounds: %{...}, font_size: 12.0, origin: %{x: 41.9, y: 115.2}}, ...]
+# origin.y is the text baseline — the stable anchor for clustering glyphs into lines.
+
+# Opt in to best-effort font style (preserve bold/italic emphasis through translation):
+{:ok, styled} = ExPdfium.chars(doc, 0, style: true)
+# => [%{char: "H", ..., style: %{font_name: "Helvetica", weight: 400, bold?: false,
+#       italic?: false, serif?: false, fixed_pitch?: false}}, ...]
 
 # Search a page (case-insensitive by default):
 {:ok, matches} = ExPdfium.search_text(doc, 0, "invoice", match_case: false)

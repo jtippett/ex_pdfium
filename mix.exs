@@ -1,7 +1,7 @@
 defmodule ExPdfium.MixProject do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.4.1"
   @source_url "https://github.com/jtippett/ex_pdfium"
 
   def project do

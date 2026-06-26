@@ -890,16 +890,52 @@ fn document_text_segments(
     })
 }
 
-// (char, bounds, font_size): one entry per glyph in content-stream order. `bounds`
-// is the loose (advance-cell) box, or None when pdfium reports none; `font_size`
-// is the scaled font size in points.
-type TextChar = (String, Option<Rect>, f32);
+// Best-effort font style for one glyph: (font_name, weight, bold?, italic?,
+// serif?, fixed_pitch?). Weight is the numeric font weight (None when pdfium
+// reports none). The booleans derive from the PDF FontDescriptor /Flags, which
+// pdfium itself documents as unreliable for non-embedded (built-in) fonts — so
+// `font_name` is the most trustworthy signal here.
+type CharStyle = (String, Option<u32>, bool, bool, bool, bool);
+
+// (char, bounds, font_size, origin, style): one entry per glyph in content-stream
+// order. `bounds` is the loose (advance-cell) box, or None when pdfium reports
+// none; `font_size` is the scaled font size in points; `origin` is the glyph's
+// pen position `(x, y)` where `y` is the text baseline; `style` is present only
+// when style extraction was requested (it costs several extra FFI calls/glyph).
+type TextChar = (
+    String,
+    Option<Rect>,
+    f32,
+    Option<(f64, f64)>,
+    Option<CharStyle>,
+);
+
+// Map pdfium-render's PdfFontWeight enum to its numeric weight (100..=900, or the
+// raw value for out-of-range weights). pdfium-render exposes no numeric accessor.
+fn weight_value(w: Option<pdfium_render::prelude::PdfFontWeight>) -> Option<u32> {
+    use pdfium_render::prelude::PdfFontWeight::*;
+    w.map(|w| match w {
+        Weight100 => 100,
+        Weight200 => 200,
+        Weight300 => 300,
+        Weight400Normal => 400,
+        Weight500 => 500,
+        Weight600 => 600,
+        Weight700Bold => 700,
+        Weight800 => 800,
+        Weight900 => 900,
+        Custom(n) => n,
+    })
+}
 
 /// Char-level text extraction: every glyph on a page, in content-stream order.
+/// When `with_style` is true each glyph also carries best-effort font style; this
+/// adds several `FPDFText_GetFontInfo`/weight FFI calls per glyph, so it is opt-in.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn document_text_chars(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
+    with_style: bool,
 ) -> Result<Vec<TextChar>, Atom> {
     let index = page_index_u16(page_index)?;
     with_pdfium(|_| {
@@ -922,7 +958,27 @@ fn document_text_chars(
                     .or_else(|_| ch.tight_bounds())
                     .ok()
                     .map(|r| rect_of(&r));
-                (s, bounds, ch.scaled_font_size().value)
+                // The pen origin: x is the start of the advance cell, y is the text
+                // baseline — the canonical anchor for clustering glyphs into lines.
+                let origin = ch
+                    .origin()
+                    .ok()
+                    .map(|(x, y)| (x.value as f64, y.value as f64));
+                let style = if with_style {
+                    let weight = weight_value(ch.font_weight());
+                    let bold = weight.is_some_and(|w| w >= 700) || ch.font_is_bold_reenforced();
+                    Some((
+                        ch.font_name(),
+                        weight,
+                        bold,
+                        ch.font_is_italic(),
+                        ch.font_is_serif(),
+                        ch.font_is_fixed_pitch(),
+                    ))
+                } else {
+                    None
+                };
+                (s, bounds, ch.scaled_font_size().value, origin, style)
             })
             .collect();
         Ok(chars)

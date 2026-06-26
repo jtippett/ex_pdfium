@@ -367,7 +367,8 @@ defmodule ExPdfium do
       %{
         char: String.t(),       # the Unicode character (may be "" if pdfium has none)
         bounds: t:bounds/0 | nil,
-        font_size: float()      # scaled font size, in points
+        font_size: float(),     # scaled font size, in points
+        origin: %{x: float(), y: float()} | nil
       }
 
   Characters come in **content-stream order** — the same order as `extract_text/2`
@@ -381,17 +382,60 @@ defmodule ExPdfium do
   `font_size` is exposed because it's the standard signal for heading/title vs body
   detection: a run-in heading at normal leading is otherwise indistinguishable from
   body text by position alone.
+
+  `origin` is the glyph's **pen position**: `x` is the start of the advance cell and
+  `y` is the **text baseline**. The baseline is the canonical anchor for clustering
+  glyphs into lines — far more stable than the loose-box bottom, whose advance cell
+  runs ~1.4× the font height and makes offset baselines in adjacent columns hard to
+  separate. `nil` when pdfium reports no origin (e.g. synthesized whitespace).
+
+  ## Options
+
+    * `:style` — when `true`, each char gains a best-effort `:style` sub-map:
+
+          style: %{
+            font_name: String.t(),      # e.g. "Helvetica", "ABCDEE+Calibri-Bold"
+            weight: non_neg_integer() | nil,  # numeric font weight (700 ≈ bold)
+            bold?: boolean(),
+            italic?: boolean(),
+            serif?: boolean(),
+            fixed_pitch?: boolean()
+          }
+
+      This is opt-in because it costs several extra FFI calls per glyph. It is **off
+      by default**, and when off the `:style` key is absent entirely (the lean path).
+
+      The booleans derive from the PDF FontDescriptor flags (and weight), which
+      pdfium reports **unreliably for non-embedded/built-in fonts** — treat them as
+      hints, not ground truth. `font_name` (often carrying a `-Bold`/`-Italic`
+      suffix) is the most trustworthy style signal. Use `style: true` to preserve
+      emphasis (bold/italic runs carry meaning) through downstream text processing.
   """
-  @spec chars(Document.t(), non_neg_integer()) ::
-          {:ok, [%{char: String.t(), bounds: bounds() | nil, font_size: float()}]}
+  @spec chars(Document.t(), non_neg_integer(), keyword()) ::
+          {:ok,
+           [
+             %{
+               :char => String.t(),
+               :bounds => bounds() | nil,
+               :font_size => float(),
+               :origin => %{x: float(), y: float()} | nil,
+               optional(:style) => %{
+                 font_name: String.t(),
+                 weight: non_neg_integer() | nil,
+                 bold?: boolean(),
+                 italic?: boolean(),
+                 serif?: boolean(),
+                 fixed_pitch?: boolean()
+               }
+             }
+           ]}
           | {:error, atom()}
-  def chars(%Document{ref: ref}, page_index) do
-    case Native.document_text_chars(ref, page_index) do
+  def chars(%Document{ref: ref}, page_index, opts \\ []) do
+    with_style = Keyword.get(opts, :style, false) == true
+
+    case Native.document_text_chars(ref, page_index, with_style) do
       {:ok, chars} ->
-        {:ok,
-         Enum.map(chars, fn {char, rect, size} ->
-           %{char: char, bounds: opt_rect(rect), font_size: size}
-         end)}
+        {:ok, Enum.map(chars, &char_map/1)}
 
       {:error, _} = err ->
         err
@@ -1509,6 +1553,28 @@ defmodule ExPdfium do
 
   defp opt_rect(nil), do: nil
   defp opt_rect(rect), do: rect_to_map(rect)
+
+  defp opt_origin(nil), do: nil
+  defp opt_origin({x, y}), do: %{x: x, y: y}
+
+  defp char_map({char, rect, size, origin, style}) do
+    base = %{char: char, bounds: opt_rect(rect), font_size: size, origin: opt_origin(origin)}
+
+    case style do
+      nil ->
+        base
+
+      {name, weight, bold?, italic?, serif?, fixed?} ->
+        Map.put(base, :style, %{
+          font_name: name,
+          weight: weight,
+          bold?: bold?,
+          italic?: italic?,
+          serif?: serif?,
+          fixed_pitch?: fixed?
+        })
+    end
+  end
 
   defp opt_matrix(nil), do: nil
 

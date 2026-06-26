@@ -7,6 +7,23 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.4.1 - 2026-06-26
+
+### Added
+- **`ExPdfium.chars/2` now returns `origin`** on every glyph: `%{x, y}` (or `nil`),
+  the glyph's pen position where `y` is the **text baseline**. The baseline is the
+  canonical anchor for clustering glyphs into lines — far more stable than the
+  loose-box bottom, whose ~1.4×-font-height advance cell makes offset baselines in
+  adjacent columns hard to separate. One extra FFI call per glyph; always present.
+- **`ExPdfium.chars/3` with `style: true`** adds a best-effort `:style` sub-map per
+  glyph — `%{font_name, weight, bold?, italic?, serif?, fixed_pitch?}` — for
+  preserving emphasis (bold/italic runs carry meaning) through downstream text
+  processing, and for font-aware heading detection. Opt-in because it costs several
+  extra FFI calls per glyph; **off by default**, and when off the `:style` key is
+  absent (the lean path is unchanged). The booleans derive from PDF FontDescriptor
+  flags, which pdfium reports unreliably for non-embedded/built-in fonts — treat
+  them as hints; `font_name` is the most trustworthy signal.
+
 ## 0.4.0 - 2026-06-25
 
 ### Added
