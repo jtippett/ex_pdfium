@@ -15,7 +15,7 @@
 - **What a "regime" is:** a named text-encoding pathology + its repair. Phase 1 ships one: `:thai_pua`. A regime module exposes `id/0`, `kind/0`, `source/0`, `detect/1`, `apply/1`.
 - **The Thai PUA problem:** legacy "Windows Thai" fonts encode repositioned tone-mark/vowel glyphs in U+F700–F71A. pdfium returns those private-use codepoints verbatim. They must be remapped to the canonical Thai block (U+0E00–0E7F). The map is **many-to-one** (several positioning variants → one canonical mark) and **1:1 per codepoint** (each PUA char → exactly one canonical char), so it is a safe per-codepoint substitution.
 - **Provenance gate (important):** the table below is transcribed from the TLWG Thai-shaping doc + the Microsoft Thai PUA convention. The first web source we pulled had at least one transcription error (`F710→0E46`, but 0E46 is MAIYAMOK; MAI HAN-AKAT is `0E31`). **Every entry must be corroborated against a second source AND validated against the rendered fixture before this ships.** Targets must all fall in U+0E00–0E7F (a test enforces this).
-- **Fixture already in place:** `test/fixtures/thai_pua.pdf` (single page, public-domain Thai Government Gazette union-dissolution notice — no personal PII). It contains 25 PUA chars, 6 distinct: F701, F702, F70A, F70B, F70E, F712. `test/fixtures/thai_pua.raw.txt` is the raw extraction, kept only as a build reference (delete in the final task).
+- **Fixture already in place:** `test/fixtures/thai_pua.pdf` (single page, public-domain Thai Government Gazette union-dissolution notice — no personal PII). It contains 25 PUA chars, 6 distinct: F701, F702, F70A, F70B, F70E, F712.
 
 ---
 
@@ -477,7 +477,6 @@ git commit -m "test(text): golden-fixture test for Thai PUA repair"
 **Files:**
 - Modify: `test/ex_pdfium/text/repair/thai_pua_test.exs` (append the guard)
 - Modify: `CHANGELOG.md` (under `## [Unreleased]`)
-- Delete: `test/fixtures/thai_pua.raw.txt`
 
 **Step 1: Write the table-provenance guard test**
 
@@ -508,13 +507,7 @@ Expected: PASS.
   (U+0E00–0E7F). `extract_text/3` gains a `repair:` option as sugar.
 ```
 
-**Step 4: Delete the build-reference raw text**
-
-```bash
-git rm test/fixtures/thai_pua.raw.txt
-```
-
-**Step 5: Full gate + commit**
+**Step 4: Full gate + commit**
 
 Run:
 ```bash
