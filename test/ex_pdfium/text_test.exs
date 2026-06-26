@@ -33,4 +33,10 @@ defmodule ExPdfium.TextTest do
   test "detect/1 returns [] on clean text" do
     assert [] = Text.detect("สวัสดี")
   end
+
+  test "repair/2 raises a clear error on a non-:auto, non-list :regimes value" do
+    assert_raise ArgumentError, ~r/must be :auto or a list/, fn ->
+      Text.repair("x", regimes: :thai_pua)
+    end
+  end
 end

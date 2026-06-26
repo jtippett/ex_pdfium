@@ -78,5 +78,10 @@ defmodule ExPdfium.Text do
     end)
   end
 
+  defp resolve(other) do
+    raise ArgumentError,
+          "regimes must be :auto or a list of regime ids, got: #{inspect(other)}"
+  end
+
   defp update(report, key, entry), do: Map.update!(report, key, &[entry | &1])
 end
