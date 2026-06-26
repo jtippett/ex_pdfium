@@ -52,4 +52,21 @@ defmodule ExPdfium.Text.Repair.ThaiPuaTest do
              "target U+#{Integer.to_string(canonical, 16)} is outside the Thai block 0E00-0E7F"
     end
   end
+
+  # The bulk of the table is three positioning families of the five tone marks.
+  # Each family must map IN ORDER onto MAI EK..THANTHAKHAT (U+0E48–0E4C). This is
+  # the structural guard that catches a transcription slip in the repetitive rows
+  # (the failure mode that produced the original F710 -> 0E46 error).
+  test "each tone-mark family maps in order onto MAI EK..THANTHAKHAT (0E48-0E4C)" do
+    map = ThaiPua.__map__()
+    tone_marks = [0x0E48, 0x0E49, 0x0E4A, 0x0E4B, 0x0E4C]
+
+    for {family, base} <- [{"low-left", 0xF705}, {"low", 0xF70A}, {"left", 0xF713}] do
+      actual = for offset <- 0..4, do: Map.fetch!(map, base + offset)
+
+      assert actual == tone_marks,
+             "#{family} tone family (U+#{Integer.to_string(base, 16)}..) must map to " <>
+               "0E48..0E4C in order, got #{inspect(Enum.map(actual, &Integer.to_string(&1, 16)))}"
+    end
+  end
 end

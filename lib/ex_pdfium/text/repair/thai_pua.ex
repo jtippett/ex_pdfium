@@ -8,8 +8,22 @@ defmodule ExPdfium.Text.Repair.ThaiPua do
   character (U+0E00–0E7F); this regime maps it back, 1:1 per codepoint.
 
   Source: TLWG Thai shaping (https://linux.thai.net/~thep/th-otf/shaping.html) and
-  the Microsoft Thai PUA convention. Each entry corroborated against a second
-  source and validated against the rendered fixture (`test/fixtures/thai_pua.pdf`).
+  the documented Microsoft Windows-Thai PUA convention.
+
+  Validation status (be honest about what is actually checked):
+
+    * The six codepoints exercised by the fixture (F701, F702, F70A, F70B, F70E,
+      F712) are validated end-to-end against the human-verified golden
+      (`test/fixtures/thai_pua.expected.txt`).
+    * The three tone-mark families (low-left F705–F709, low F70A–F70E, left
+      F713–F717) are guarded by a structural-consistency test: each family must
+      map in order onto MAI EK..THANTHAKHAT (U+0E48–0E4C). This is what catches a
+      transcription slip — e.g. the `F710 => 0x0E31` entry corrects a `0E46`
+      (MAIYAMOK) error seen in a summarized rendering of the source.
+    * The remaining singleton entries (F700, F703, F704, F70F, F711, F718–F71A)
+      are transcribed from the cited source and follow its documented structure,
+      but are not yet exercised by a fixture. Adding a Thai PDF that uses them
+      would convert that transcription trust into a regression guard.
   """
 
   # Phase-1 regime; see ExPdfium.Text for the dispatch contract.
