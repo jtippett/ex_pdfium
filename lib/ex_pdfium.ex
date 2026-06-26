@@ -320,11 +320,31 @@ defmodule ExPdfium do
 
   Returns `{:error, :document_closed}` or `{:error, :page_out_of_bounds}` as
   appropriate. A page with no text returns `{:ok, ""}`.
+
+  ## Options
+
+    * `:repair` — when set, the raw text is piped through `ExPdfium.Text.repair/2`
+      to recover canonical Unicode from legacy font encodings before being
+      returned. The value is forwarded as the `:regimes` selection (`:auto` or a
+      list of regime ids). Defaults to no repair (the faithful raw extraction).
+
+  When `:repair` is set, only the repaired text is returned; the repair report is
+  dropped. Call `ExPdfium.Text.repair/2` directly if you need the report.
   """
-  @spec extract_text(Document.t(), non_neg_integer()) ::
+  @spec extract_text(Document.t(), non_neg_integer(), keyword()) ::
           {:ok, String.t()} | {:error, atom()}
-  def extract_text(%Document{ref: ref}, page_index),
-    do: Native.document_extract_text(ref, page_index)
+  def extract_text(%Document{ref: ref}, page_index, opts \\ []) do
+    with {:ok, raw} <- Native.document_extract_text(ref, page_index) do
+      case Keyword.get(opts, :repair) do
+        nil ->
+          {:ok, raw}
+
+        selection ->
+          {text, _report} = ExPdfium.Text.repair(raw, regimes: selection)
+          {:ok, text}
+      end
+    end
+  end
 
   @doc group: :text
   @doc """

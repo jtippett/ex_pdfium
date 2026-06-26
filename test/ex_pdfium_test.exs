@@ -1979,4 +1979,17 @@ defmodule ExPdfiumTest do
       assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("D:20241399000000")
     end
   end
+
+  describe "extract_text/3 :repair" do
+    @tag :pdfium
+    test "extract_text/3 with repair: :auto returns canonical Thai (no PUA)" do
+      {:ok, doc} = ExPdfium.open("test/fixtures/thai_pua.pdf")
+      {:ok, raw} = ExPdfium.extract_text(doc, 0)
+      {:ok, fixed} = ExPdfium.extract_text(doc, 0, repair: :auto)
+      :ok = ExPdfium.close(doc)
+
+      assert Enum.any?(String.to_charlist(raw), &(&1 in 0xF700..0xF71A))
+      refute Enum.any?(String.to_charlist(fixed), &(&1 in 0xF700..0xF71A))
+    end
+  end
 end
