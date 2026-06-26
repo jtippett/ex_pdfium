@@ -42,4 +42,14 @@ defmodule ExPdfium.Text.Repair.ThaiPuaTest do
   test "detect/1 is false on clean Thai" do
     assert {false, 0} = ThaiPua.detect("สวัสดี")
   end
+
+  test "every table key is in the Thai PUA block and every target is canonical Thai" do
+    for {pua, canonical} <- ThaiPua.__map__() do
+      assert pua in 0xF700..0xF71A,
+             "key U+#{Integer.to_string(pua, 16)} is outside the Thai PUA block F700-F71A"
+
+      assert canonical in 0x0E00..0x0E7F,
+             "target U+#{Integer.to_string(canonical, 16)} is outside the Thai block 0E00-0E7F"
+    end
+  end
 end

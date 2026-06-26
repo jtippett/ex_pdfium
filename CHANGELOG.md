@@ -7,6 +7,17 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Added
+- **`ExPdfium.Text.repair/2` and `ExPdfium.Text.detect/1`** — a pure-Elixir layer
+  that recovers canonical Unicode from legacy font encodings, leaving raw
+  extraction untouched. The first regime, `:thai_pua`, remaps the legacy
+  "Windows Thai" Private Use Area (U+F700–F71A) positioning variants — which
+  pdfium returns verbatim from a font's ToUnicode CMap — back to canonical Thai
+  (U+0E00–0E7F). `repair/2` is opt-in and explicit; raw extraction APIs are
+  unchanged. `extract_text/3` gains a `repair:` option (`:auto` or a list of
+  regime ids) as sugar that returns repaired text. Source for the Thai table:
+  TLWG Thai shaping (https://linux.thai.net/~thep/th-otf/shaping.html).
+
 ## 0.4.2 - 2026-06-26
 
 ## 0.4.1 - 2026-06-26
