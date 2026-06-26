@@ -34,4 +34,12 @@ defmodule ExPdfium.Text.Repair.ThaiPuaTest do
     {out, _} = ThaiPua.apply(input)
     refute Enum.any?(String.to_charlist(out), fn c -> c in 0xF700..0xF71A end)
   end
+
+  test "detect/1 fires with evidence on PUA text" do
+    assert {true, 1} = ThaiPua.detect("เจ" <> <<0xF70B::utf8>> <> "า")
+  end
+
+  test "detect/1 is false on clean Thai" do
+    assert {false, 0} = ThaiPua.detect("สวัสดี")
+  end
 end
