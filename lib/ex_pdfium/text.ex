@@ -21,6 +21,9 @@ defmodule ExPdfium.Text do
   # behaviour only when a third regime justifies it (YAGNI).
   @regimes [ExPdfium.Text.Repair.ThaiPua]
 
+  # id => module, built once at compile time (resolve/1 looks ids up per call).
+  @by_id Map.new(@regimes, &{&1.id(), &1})
+
   @type report :: %{applied: [map()], flagged: [map()]}
 
   @doc "Detect (don't transform) which regimes apply. Returns one entry per firing regime."
@@ -68,13 +71,13 @@ defmodule ExPdfium.Text do
     end
   end
 
-  defp resolve(:auto), do: @regimes
+  # A present-but-nil :regimes (e.g. a threaded maybe-nil selector) means "default",
+  # same as the key being absent. Keyword.get's default only covers absence.
+  defp resolve(auto) when auto in [:auto, nil], do: @regimes
 
   defp resolve(ids) when is_list(ids) do
-    known = Map.new(@regimes, &{&1.id(), &1})
-
     Enum.map(ids, fn id ->
-      Map.get(known, id) || raise ArgumentError, "unknown regime: #{inspect(id)}"
+      Map.get(@by_id, id) || raise ArgumentError, "unknown regime: #{inspect(id)}"
     end)
   end
 

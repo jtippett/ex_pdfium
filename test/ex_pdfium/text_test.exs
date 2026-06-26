@@ -39,4 +39,10 @@ defmodule ExPdfium.TextTest do
       Text.repair("x", regimes: :thai_pua)
     end
   end
+
+  test "repair/2 with a present-but-nil :regimes falls back to :auto" do
+    {out, report} = Text.repair("เจ" <> <<0xF70B::utf8>> <> "า", regimes: nil)
+    assert out == "เจ้า"
+    assert [%{regime: :thai_pua}] = report.applied
+  end
 end

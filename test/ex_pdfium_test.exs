@@ -1991,5 +1991,39 @@ defmodule ExPdfiumTest do
       assert Enum.any?(String.to_charlist(raw), &(&1 in 0xF700..0xF71A))
       refute Enum.any?(String.to_charlist(fixed), &(&1 in 0xF700..0xF71A))
     end
+
+    @tag :pdfium
+    test "extract_text/3 with repair: false is a no-op (raw, no raise)" do
+      {:ok, doc} = ExPdfium.open("test/fixtures/thai_pua.pdf")
+      {:ok, raw} = ExPdfium.extract_text(doc, 0)
+      {:ok, unrepaired} = ExPdfium.extract_text(doc, 0, repair: false)
+      :ok = ExPdfium.close(doc)
+
+      assert unrepaired == raw
+    end
+
+    @tag :pdfium
+    test "extract_text/3 forgives a bare regime id (repair: :thai_pua) and repair: true" do
+      {:ok, doc} = ExPdfium.open("test/fixtures/thai_pua.pdf")
+      {:ok, auto} = ExPdfium.extract_text(doc, 0, repair: :auto)
+      {:ok, bare} = ExPdfium.extract_text(doc, 0, repair: :thai_pua)
+      {:ok, truthy} = ExPdfium.extract_text(doc, 0, repair: true)
+      :ok = ExPdfium.close(doc)
+
+      assert bare == auto
+      assert truthy == auto
+      refute Enum.any?(String.to_charlist(bare), &(&1 in 0xF700..0xF71A))
+    end
+
+    @tag :pdfium
+    test "extract_text/3 raises on an unknown regime id" do
+      {:ok, doc} = ExPdfium.open("test/fixtures/thai_pua.pdf")
+
+      assert_raise ArgumentError, ~r/unknown regime/, fn ->
+        ExPdfium.extract_text(doc, 0, repair: [:bogus])
+      end
+
+      :ok = ExPdfium.close(doc)
+    end
   end
 end

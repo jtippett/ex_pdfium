@@ -14,9 +14,11 @@ not pdfium-render's).
   "Windows Thai" Private Use Area (U+F700–F71A) positioning variants — which
   pdfium returns verbatim from a font's ToUnicode CMap — back to canonical Thai
   (U+0E00–0E7F). `repair/2` is opt-in and explicit; raw extraction APIs are
-  unchanged. `extract_text/3` gains a `repair:` option (`:auto` or a list of
-  regime ids) as sugar that returns repaired text. Source for the Thai table:
-  TLWG Thai shaping (https://linux.thai.net/~thep/th-otf/shaping.html).
+  unchanged. `extract_text/3` gains a `repair:` option as sugar that returns
+  repaired text: `:auto`/`true` to run every regime, a list of regime ids, or a
+  bare id (`:thai_pua`); `nil`/`false` (default) means no repair, and an unknown
+  id raises `ArgumentError`. Source for the Thai table: TLWG Thai shaping
+  (https://linux.thai.net/~thep/th-otf/shaping.html).
 
 ## 0.4.2 - 2026-06-26
 

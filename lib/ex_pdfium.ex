@@ -325,8 +325,11 @@ defmodule ExPdfium do
 
     * `:repair` — when set, the raw text is piped through `ExPdfium.Text.repair/2`
       to recover canonical Unicode from legacy font encodings before being
-      returned. The value is forwarded as the `:regimes` selection (`:auto` or a
-      list of regime ids). Defaults to no repair (the faithful raw extraction).
+      returned. Accepts `:auto` (or `true`) to run every regime, a list of regime
+      ids (`[:thai_pua]`), or a bare regime id (`:thai_pua`, forgiven as a
+      single-element list). `nil` or `false` (the default) means no repair — the
+      faithful raw extraction is returned. An unknown regime id raises
+      `ArgumentError`.
 
   When `:repair` is set, only the repaired text is returned; the repair report is
   dropped. Call `ExPdfium.Text.repair/2` directly if you need the report.
@@ -335,8 +338,8 @@ defmodule ExPdfium do
           {:ok, String.t()} | {:error, atom()}
   def extract_text(%Document{ref: ref}, page_index, opts \\ []) do
     with {:ok, raw} <- Native.document_extract_text(ref, page_index) do
-      case Keyword.get(opts, :repair) do
-        nil ->
+      case normalize_repair(Keyword.get(opts, :repair)) do
+        :none ->
           {:ok, raw}
 
         selection ->
@@ -346,11 +349,28 @@ defmodule ExPdfium do
     end
   end
 
+  # Normalize the friendly :repair sugar into a Text.repair/2 :regimes selection.
+  # nil/false => off; true/:auto => auto; a bare regime id => [id] (forgiving the
+  # common `repair: :thai_pua` instead of `repair: [:thai_pua]`). Genuinely bad
+  # values (unknown ids, strings, maps) are forwarded so Text.repair raises.
+  defp normalize_repair(r) when r in [nil, false], do: :none
+  defp normalize_repair(r) when r in [true, :auto], do: :auto
+  defp normalize_repair(r) when is_list(r), do: r
+  defp normalize_repair(r) when is_atom(r), do: [r]
+  defp normalize_repair(r), do: r
+
   @doc group: :text
   @doc """
   Extract the plain text of the whole document. Pages are joined by a form-feed
   (`"\\f"`) character. Returns `{:error, :document_closed}` if the document has
   been closed.
+
+  There is no `:repair` option here (the second argument is reserved for the
+  per-page arity). To repair legacy font encodings across a whole document, pipe
+  the result through `ExPdfium.Text.repair/2`:
+
+      {:ok, raw} = ExPdfium.extract_text(doc)
+      {text, _report} = ExPdfium.Text.repair(raw)
   """
   @spec extract_text(Document.t()) :: {:ok, String.t()} | {:error, atom()}
   def extract_text(%Document{ref: ref}), do: Native.document_extract_text_all(ref)
