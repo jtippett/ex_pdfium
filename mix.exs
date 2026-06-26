@@ -1,6 +1,9 @@
 defmodule ExPdfium.MixProject do
   use Mix.Project
 
+  # Do not hand-edit. The release script (`scripts/release.exs`, via `just
+  # release`) bumps this line and the CHANGELOG together; editing it by hand
+  # desyncs the two and the precompiled-NIF release dance (see UPDATE_PROCEDURE.md).
   @version "0.4.1"
   @source_url "https://github.com/jtippett/ex_pdfium"
 
