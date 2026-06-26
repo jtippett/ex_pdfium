@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.4.3 - 2026-06-26
+
 ### Added
 - **`ExPdfium.Text.repair/2` and `ExPdfium.Text.detect/1`** — a pure-Elixir layer
   that recovers canonical Unicode from legacy font encodings, leaving raw
