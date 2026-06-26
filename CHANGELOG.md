@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.4.2 - 2026-06-26
+
 ## 0.4.1 - 2026-06-26
 
 ### Added
