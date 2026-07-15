@@ -9,7 +9,8 @@ defmodule ExPdfium.Native do
   # is verified against `checksum-Elixir.ExPdfium.Native.exs`. That file is
   # regenerated AFTER the release workflow uploads the NIF artifacts, via
   #   mix rustler_precompiled.download ExPdfium.Native --all --print
-  # and must be committed before publishing to Hex.
+  # The gated publish job regenerates it in its own workspace before packaging;
+  # regenerate and commit it separately so source checkouts stay in sync too.
   #
   # No per-OTP artifacts: rustler targets NIF ABI 2.15, which loads on OTP 27/28/
   # 29+. One artifact per platform target covers every supported OTP.
@@ -36,13 +37,14 @@ defmodule ExPdfium.Native do
   def pdfium_version, do: :erlang.nif_error(:nif_not_loaded)
 
   # Dev/test only — point the dynamic binding at a dir holding libpdfium before
-  # the first pdfium call. No-op on the shipped (statically-linked) build. Called
+  # the first pdfium call. No-op on a statically-linked custom build. Called
   # from test/test_helper.exs; env vars can't carry this into a NIF (os:putenv
   # doesn't reach a NIF's getenv).
   def set_dynamic_lib_dir(_dir), do: :erlang.nif_error(:nif_not_loaded)
 
-  # Phase 1 — open documents (path or binary) + page count.
-  # `source` is {:path, path} | {:binary, bytes}; password is binary | nil.
+  # Phase 1 — open in-memory documents + page count. Public path opens use
+  # File.read/1 before entering this CPU-dirty NIF.
+  # `source` is {:binary, bytes}; password is binary | nil.
   def document_open(_source, _password), do: :erlang.nif_error(:nif_not_loaded)
   def document_close(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_page_count(_doc), do: :erlang.nif_error(:nif_not_loaded)

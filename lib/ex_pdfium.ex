@@ -16,7 +16,7 @@ defmodule ExPdfium do
   > `add_free_text_annotation/5`, `add_square_annotation/4`, `add_link_annotation/5`,
   > `delete_annotation/3`; and `save_to_bytes/1` / `save_to_file/2`.
   > Form-filling and the text-markup annotation family (highlight/underline/…) are
-  > arriving in later 0.3.x releases.
+  > not currently included.
 
   > #### Untrusted input {: .warning}
   > pdfium runs **in-process** as a native library, so a genuine crash in it would
@@ -52,10 +52,17 @@ defmodule ExPdfium do
   initialized. Useful as a smoke test that the precompiled NIF is healthy.
 
   pdfium exposes no build-version string through its public C API, so this is a
-  fixed confirmation marker rather than a version number.
+  fixed confirmation marker rather than a version number. A missing or
+  incompatible library returns `{:error, :pdfium_init_failed}`.
   """
-  @spec pdfium_version() :: String.t()
-  def pdfium_version, do: Native.pdfium_version()
+  @spec pdfium_version() :: String.t() | {:error, :pdfium_init_failed}
+  def pdfium_version do
+    case Native.pdfium_version() do
+      {:ok, version} -> version
+      {:error, _reason} = error -> error
+      version when is_binary(version) -> version
+    end
+  end
 
   @doc group: :documents
   @doc """
@@ -112,6 +119,20 @@ defmodule ExPdfium do
   def open_blob(bytes, opts \\ []) when is_binary(bytes), do: do_open({:binary, bytes}, opts)
 
   defp do_open(source, opts) do
+    case source do
+      {:path, path} ->
+        case File.read(path) do
+          {:ok, bytes} -> do_open({:binary, bytes}, opts)
+          {:error, :enoent} -> {:error, :enoent}
+          {:error, _reason} -> {:error, :io_error}
+        end
+
+      {:binary, _bytes} ->
+        do_open_blob(source, opts)
+    end
+  end
+
+  defp do_open_blob(source, opts) do
     case Native.document_open(source, opts[:password]) do
       {:ok, ref} -> {:ok, %Document{ref: ref}}
       {:error, _} = err -> err
@@ -582,11 +603,11 @@ defmodule ExPdfium do
 
   def parse_pdf_date(str) when is_binary(str) do
     re =
-      ~r/^\s*(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?(?:([Zz+\-])(\d{2})?'?(\d{2})?'?)?/
+      ~r/^\s*(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?(?:([Zz])|([+\-])(\d{2})(?:'?(\d{2})'?)?)?\s*$/
 
     case Regex.run(re, str) do
-      # Regex.run drops trailing groups that didn't participate; pad back to 9.
-      [_ | parts] -> build_pdf_datetime(parts ++ List.duplicate("", 9 - length(parts)))
+      # Regex.run drops trailing groups that didn't participate; pad back to 10.
+      [_ | parts] -> build_pdf_datetime(parts ++ List.duplicate("", 10 - length(parts)))
       nil -> {:error, :invalid_date}
     end
   end
@@ -918,8 +939,10 @@ defmodule ExPdfium do
         matrix: t:matrix/0 | nil          # placement transform (scale/rotation/flip)
       }
 
-  `width`/`height` are pdfium's reported pixel dimensions (a `0` means pdfium
-  couldn't read it), and `index` is valid only until the document is mutated.
+  `width`/`height` are pdfium's reported pixel dimensions. If pdfium cannot read
+  an image's dimensions or bit depth, the call returns `{:error, :image_failed}`
+  rather than silently omitting that image or substituting zero. `index` is valid
+  only until the document is mutated.
 
   Use `image_data/3` to get decoded pixels, or `image_raw_data/3` for the original
   encoded bytes — `filters` tells you the encoding (a `"DCTDecode"` raw stream is a
@@ -1678,7 +1701,7 @@ defmodule ExPdfium do
   # Build a UTC DateTime from PDF-date regex parts [Y, Mo, D, H, Mi, S, sign, OH, OM]
   # (unmatched optional groups are ""). The naive local time is shifted to UTC by
   # its offset; a missing offset is treated as UTC.
-  defp build_pdf_datetime([y, mo, d, h, mi, s, sign, oh, om]) do
+  defp build_pdf_datetime([y, mo, d, h, mi, s, z, sign, oh, om]) do
     with {:ok, naive} <-
            NaiveDateTime.new(
              to_int(y, 0),
@@ -1687,8 +1710,8 @@ defmodule ExPdfium do
              to_int(h, 0),
              to_int(mi, 0),
              to_int(s, 0)
-           ) do
-      offset = pdf_offset_seconds(sign, oh, om)
+           ),
+         {:ok, offset} <- pdf_offset_seconds(if(z == "", do: sign, else: z), oh, om) do
       {:ok, DateTime.add(DateTime.from_naive!(naive, "Etc/UTC"), -offset, :second)}
     else
       _ -> {:error, :invalid_date}
@@ -1699,11 +1722,18 @@ defmodule ExPdfium do
   defp to_int(s, _default), do: String.to_integer(s)
 
   defp pdf_offset_seconds(sign, oh, om) when sign in ["+", "-"] do
-    secs = to_int(oh, 0) * 3600 + to_int(om, 0) * 60
-    if sign == "-", do: -secs, else: secs
+    hours = to_int(oh, 0)
+    minutes = to_int(om, 0)
+
+    if hours <= 23 and minutes <= 59 do
+      secs = hours * 3600 + minutes * 60
+      {:ok, if(sign == "-", do: -secs, else: secs)}
+    else
+      {:error, :invalid_date}
+    end
   end
 
-  defp pdf_offset_seconds(_sign, _oh, _om), do: 0
+  defp pdf_offset_seconds(_sign, _oh, _om), do: {:ok, 0}
 
   # Multiply two PDF matrices in the row-vector convention: result = A · B, so a
   # point transformed by the result is `(p · A) · B`.
