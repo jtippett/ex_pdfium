@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.5.0 - 2026-07-15
+
 ### Security
 
 - Reject embedded NULs in passwords, search queries, authored text, and link
