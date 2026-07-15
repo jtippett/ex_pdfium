@@ -1,5 +1,10 @@
 # ExPdfium — Session Handoff
 
+> **Archived session history.** This file records the port as it unfolded and is
+> not a current status document; later sections intentionally contradict early
+> assumptions. Use `README.md`, `CHANGELOG.md`, and `UPDATE_PROCEDURE.md` for the
+> current API, packaging, and maintenance contract.
+
 You are working on **ExPdfium**, an Elixir NIF wrapper around
 [`pdfium`](https://pdfium.googlesource.com/pdfium/) (Google's Chromium PDF
 engine) via the Rust [`pdfium-render`](https://github.com/ajrcarey/pdfium-render)

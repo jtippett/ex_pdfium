@@ -3,8 +3,8 @@
 Two things drift over time and need a deliberate procedure:
 
 1. **`pdfium-render`** (the Rust crate) — pinned exactly in `Cargo.toml`.
-2. **pdfium itself** (the bblanchon binary) — pinned by tag (`LIBPDFIUM_TAG` /
-   the version your `release.yml` downloads).
+2. **pdfium itself** (the bblanchon binary) — pinned by `PDFIUM_TAG` in the CI
+   and release workflows, with asset digests in `PDFIUM_SHA256SUMS`.
 
 And one thing must happen in a **specific order** every release: regenerating the
 precompiled-NIF checksum file. That's the part everyone gets wrong; it's last.
@@ -37,21 +37,23 @@ precompiled-NIF checksum file. That's the part everyone gets wrong; it's last.
 
 ## Part B — Bumping the pdfium binary (bblanchon)
 
-The shipped NIF links a **static** pdfium; dev/test loads a **dynamic** one. Both
-come from https://github.com/bblanchon/pdfium-binaries/releases.
+Release archives bundle a **dynamic** libpdfium beside the NIF; dev/test loads the
+same library layout from `priv/pdfium`. Both come from
+https://github.com/bblanchon/pdfium-binaries/releases.
 
-- The pinned tag (carry forward from the old project: `chromium/7506`) lives in
-  `release.yml` (and a `LIBPDFIUM_TAG` file if you keep one for the dev download
-  script).
-- To bump: pick a newer `chromium/NNNN` tag, update the download URLs + recorded
-  sha256s, rebuild, run the full suite, render `../pdfium/custom/test.pdf` and
+- The current pinned tag is `chromium/7543`. Keep `.github/workflows/ci.yml`,
+  `.github/workflows/release.yml`, `scripts/fetch-pdfium-dev.sh`, and
+  `PDFIUM_SHA256SUMS` in sync.
+- To bump: pick a newer immutable `chromium/NNNN` release, update the tag and all
+  four recorded SHA-256 asset digests, rebuild, run the full suite, render a
+  representative PDF with both versions, and
   confirm output is byte-identical (or visually identical) to the prior build.
 - **Security:** if upstream pdfium fixes a parsing/sandbox CVE, bump promptly.
 - Optionally port the old project's weekly bot
   (`.github/workflows/update-libpdfium.yaml`) that opens a PR on a new tag.
 
-> Keep the static (shipping) and dynamic (dev) pdfium on the **same tag** so dev
-> behavior matches what users get.
+> Keep the bundled (shipping) and dev/test pdfium on the **same tag and verified
+> asset digests** so local behavior matches what users get.
 
 ---
 
@@ -73,7 +75,10 @@ steps 1–3; the rest is the workflow + the checksum regen.
    ```
    - `EXPDFIUM_BUILD=1` forces a local build so compiling `native.ex` doesn't try
      to download a NIF whose checksum doesn't exist yet (the chicken-and-egg).
-   - This writes `checksum-Elixir.ExPdfium.Native.exs`. Commit + push it.
+   - This writes `checksum-Elixir.ExPdfium.Native.exs`. Commit + push it so git
+     checkouts and the next source package do not retain the previous release's
+     manifest. The Hex publish job independently regenerates the same file in its
+     workspace before packaging.
 4. **Publish to Hex.** The `publish` job in `release.yml` does this from CI,
    **gated by the `hex` environment** (a required-reviewer approval pauses it so
    you eyeball the release first). It regenerates checksums in the CI workspace
@@ -86,7 +91,7 @@ On a clean machine (or a fresh `_build`/`deps`) with **no Rust toolchain and no
 pdfium installed**, on **OTP 29**:
 ```elixir
 # mix.exs
-{:ex_pdfium, "~> 0.1"}
+{:ex_pdfium, "~> 0.4"}
 ```
 ```bash
 mix deps.get && mix compile     # downloads the precompiled NIF, no build

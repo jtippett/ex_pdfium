@@ -1,5 +1,12 @@
 # ExPdfium Porting Playbook
 
+> **Historical design record.** This staged port is complete and some original
+> recommendations below (especially static linking and the read-only scope) are
+> preserved to explain decisions that were later superseded. For the current
+> product and release contract, use `README.md`, `CHANGELOG.md`, and
+> `UPDATE_PROCEDURE.md`; the corrected dynamic-bundling result is recorded in
+> Phase 0 below.
+
 How to grow this scaffold into a complete, community-grade Elixir wrapper around
 [`pdfium`](https://pdfium.googlesource.com/pdfium/) — Google's PDF engine from
 Chromium — via the Rust [`pdfium-render`](https://github.com/ajrcarey/pdfium-render)
@@ -200,10 +207,10 @@ the **document bytes** in the resource and re-open per call — slower but trivi
 sound. Prefer the static-Pdfium handle; reach for re-open only if lifetimes fight
 you.
 
-### d) Build size & time
-A static pdfium is large; release builds are heavier than ex_bashkit's. Lean on
-`Swatinem/rust-cache` and cache the downloaded pdfium per target. End users never
-pay this — they download the precompiled NIF.
+### d) Build size & time (original static-link analysis)
+This concern was superseded by the dynamic-bundling result in Phase 0. Release
+archives still bundle a multi-megabyte libpdfium per target; cache Rust builds
+and downloads so end users only pay the precompiled-artifact download.
 
 ---
 
@@ -289,10 +296,11 @@ trivial NIF before writing real rendering code.
 - [ ] AcroForm fields (read values; filling is borderline-write — gate it).
       Annotations (read). XFA/JS need the V8 pdfium build we don't ship — note it.
 
-### Out of scope (read-only library) — revisit only on demand
-Write/edit: create PDFs, add/copy/delete/reorder/rotate pages, merge/split,
-stamp/watermark, flatten, save → bytes/file. Also niche read: embedded
-thumbnails, signature info, render-straight-to-PNG convenience.
+### Original read-only scope (superseded)
+Page assembly, rotation, flattening, save, new-document creation, drawing, and
+annotation authoring were subsequently implemented. Form filling and some niche
+operations remain out of scope; see the current README rather than this staged
+checklist.
 
 ---
 

@@ -7,6 +7,35 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Security
+
+- Reject embedded NULs in passwords, search queries, authored text, and link
+  URIs before they reach `pdfium-render`. Password/URI NULs previously caused a
+  Rust panic (`:nif_panicked`), and a URI panic poisoned the document resource;
+  UTF-16 text/search inputs were silently truncated.
+- Validate all page, drawing, annotation, and image geometry before narrowing
+  `f64` to `f32`; cap placed-image pixel area and make its staging allocation
+  fallible. Failed object and annotation authoring now rolls back attached state.
+- Pin SHA-256 digests for all bundled `libpdfium` assets and verify them in CI,
+  release builds, and the development download script.
+- Pin every third-party GitHub Action to an immutable commit and restrict release
+  write permission to the job that uploads the already-built artifacts.
+
+### Fixed
+
+- Return explicit errors for missing/incompatible `libpdfium`, cleanup-thread
+  creation, corrupt bitmap dimensions, unreadable image/form/permission fields,
+  and invalid render option terms instead of panicking, coercing, or substituting
+  success values.
+- Read file paths through the BEAM before entering the CPU-dirty parsing NIF, so
+  slow filesystem IO cannot block a dirty CPU scheduler.
+- Reject trailing garbage, incomplete time zones, and out-of-range UTC offsets
+  in `parse_pdf_date/1`.
+- Regenerate the checked-in precompiled checksums for all v0.4.3 artifacts and
+  add release invariants that catch version/target drift.
+- Correct stale README and release documentation about the write API, current
+  dependency version, dynamic `libpdfium` packaging, and the pinned PDFium tag.
+
 ## 0.4.3 - 2026-06-26
 
 ### Added

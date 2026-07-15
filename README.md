@@ -7,10 +7,9 @@ Chromium PDF engine — via the Rust
 
 No Rust toolchain. No separately-installed pdfium. Add the dep and go.
 
-> **A read & extract toolkit.** Open documents and count pages, render pages to
-> bitmaps, extract and search text, read metadata, page geometry and permissions,
-> walk structure (bookmarks, links, attachments), and read forms and annotations.
-> It does **not** create, edit, or save PDFs.
+> **A PDF read, extract, and authoring toolkit.** Open, render, extract and search
+> text, inspect metadata and structure, assemble or rotate pages, create PDFs,
+> draw text/shapes/images, author annotations, and save the result.
 
 ## Why
 
@@ -28,7 +27,7 @@ precompiled binary from one build matrix.
 
 ```elixir
 def deps do
-  [{:ex_pdfium, "~> 0.1"}]
+  [{:ex_pdfium, "~> 0.4"}]
 end
 ```
 
@@ -309,8 +308,7 @@ reads back.
 > not auto-generate. FreeText renders its text in pdfium's default appearance
 > color (black); for colored text, use `draw_text/5`.
 
-Saving, assembly, and annotation authoring are the v0.3 write surface;
-form-filling and the text-markup annotation family arrive in later 0.3.x releases.
+Form-filling and the text-markup annotation family are not currently included.
 
 ## Development
 
