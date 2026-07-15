@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.5.1 - 2026-07-15
+
 ## 0.5.0 - 2026-07-15
 
 ### Security
