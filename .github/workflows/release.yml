@@ -12,7 +12,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   # The pdfium binary release to bundle. Must match pdfium-render's bound API
@@ -45,17 +45,17 @@ jobs:
             pdfium_asset: pdfium-linux-arm64.tgz
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Extract version
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: native/ex_pdfium
 
@@ -69,6 +69,12 @@ jobs:
           mkdir -p pdfium-dyn
           url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/${{ matrix.pdfium_asset }}"
           curl -fsSL "$url" -o pdfium.tgz
+          expected="$(awk -v asset="${{ matrix.pdfium_asset }}" '$2 == asset { print $1 }' PDFIUM_SHA256SUMS)"
+          actual="$(shasum -a 256 pdfium.tgz | awk '{ print $1 }')"
+          if [[ -z "$expected" || "$actual" != "$expected" ]]; then
+            echo "libpdfium checksum mismatch for ${{ matrix.pdfium_asset }}" >&2
+            exit 1
+          fi
           libfile="$(tar -tzf pdfium.tgz | grep -E 'lib/libpdfium\.(so|dylib)$' | head -n1)"
           tar -xzf pdfium.tgz -C pdfium-dyn "$libfile"
           echo "lib=${{ github.workspace }}/pdfium-dyn/${libfile}" >> "$GITHUB_OUTPUT"
@@ -101,7 +107,7 @@ jobs:
           echo "archive=${NIF_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload NIF artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nif-${{ matrix.target }}
           path: ${{ steps.package.outputs.archive }}
@@ -111,15 +117,17 @@ jobs:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: nif-*
           merge-multiple: true
           path: artifacts
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: artifacts/*.tar.gz
 
@@ -138,15 +146,15 @@ jobs:
       EXPDFIUM_BUILD: "1"
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up Elixir
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           otp-version: "27.2"
           elixir-version: "1.20.1"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       # The local build for checksum-gen uses the dynamic binding; provide libpdfium.
       - name: Download libpdfium (dynamic, for local build)
@@ -154,6 +162,12 @@ jobs:
           mkdir -p priv/pdfium
           url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/pdfium-linux-x64.tgz"
           curl -fsSL "$url" -o pdfium.tgz
+          expected="$(awk '$2 == "pdfium-linux-x64.tgz" { print $1 }' PDFIUM_SHA256SUMS)"
+          actual="$(shasum -a 256 pdfium.tgz | awk '{ print $1 }')"
+          if [[ -z "$expected" || "$actual" != "$expected" ]]; then
+            echo "libpdfium checksum mismatch for pdfium-linux-x64.tgz" >&2
+            exit 1
+          fi
           tar -xzf pdfium.tgz -C priv/pdfium lib/libpdfium.so
           mv priv/pdfium/lib/libpdfium.so priv/pdfium/ && rmdir priv/pdfium/lib || true
           echo "PDFIUM_DYNAMIC_LIB_PATH=${{ github.workspace }}/priv/pdfium" >> "$GITHUB_ENV"

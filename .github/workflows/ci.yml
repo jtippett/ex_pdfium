@@ -37,21 +37,21 @@ jobs:
       MIX_ENV: test
       EXPDFIUM_BUILD: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up Elixir
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           otp-version: ${{ matrix.otp }}
           elixir-version: ${{ matrix.elixir }}
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
       - name: Cache mix deps
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             deps
@@ -60,7 +60,7 @@ jobs:
           restore-keys: mix-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -75,6 +75,12 @@ jobs:
           mkdir -p priv/pdfium
           url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/pdfium-linux-x64.tgz"
           curl -fsSL "$url" -o pdfium.tgz
+          expected="$(awk '$2 == "pdfium-linux-x64.tgz" { print $1 }' PDFIUM_SHA256SUMS)"
+          actual="$(shasum -a 256 pdfium.tgz | awk '{ print $1 }')"
+          if [[ -z "$expected" || "$actual" != "$expected" ]]; then
+            echo "libpdfium checksum mismatch for pdfium-linux-x64.tgz" >&2
+            exit 1
+          fi
           tar -xzf pdfium.tgz -C priv/pdfium lib/libpdfium.so
           mv priv/pdfium/lib/libpdfium.so priv/pdfium/
           rmdir priv/pdfium/lib || true

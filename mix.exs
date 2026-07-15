@@ -48,9 +48,9 @@ defmodule ExPdfium.MixProject do
       },
       # Ship the Rust sources so a from-source build (rustler_precompiled
       # force_build / unsupported targets) works for consumers.
-      files:
-        ~w(lib native/ex_pdfium/Cargo.toml native/ex_pdfium/Cargo.lock native/ex_pdfium/src
-           checksum-Elixir.ExPdfium.Native.exs .formatter.exs mix.exs README.md CHANGELOG.md LICENSE)
+      files: ~w(lib native/ex_pdfium/Cargo.toml native/ex_pdfium/Cargo.lock native/ex_pdfium/src
+           checksum-Elixir.ExPdfium.Native.exs PDFIUM_SHA256SUMS .formatter.exs mix.exs README.md
+           CHANGELOG.md LICENSE)
     ]
   end
 

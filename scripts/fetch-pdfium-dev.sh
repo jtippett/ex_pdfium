@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Download a DYNAMIC libpdfium for local dev/test into priv/pdfium/.
-# The shipped NIF links pdfium statically; this is only for the dev inner loop.
+# Release archives bundle the same dynamic library beside the NIF.
 #
 #   scripts/fetch-pdfium-dev.sh [chromium/NNNN]
 #
@@ -10,6 +10,11 @@ set -euo pipefail
 TAG="${1:-chromium/7543}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/priv/pdfium"
+
+if [[ "$TAG" != "chromium/7543" ]]; then
+  echo "unsupported unverified tag: $TAG (update PDFIUM_SHA256SUMS and the pinned tag first)" >&2
+  exit 1
+fi
 
 os="$(uname -s)"; arch="$(uname -m)"
 case "$os-$arch" in
@@ -25,6 +30,13 @@ echo "Downloading $asset ($TAG) ..."
 mkdir -p "$DEST"
 tmp="$(mktemp -d)"
 curl -fsSL "$url" -o "$tmp/pdfium.tgz"
+expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$ROOT/PDFIUM_SHA256SUMS")"
+actual="$(shasum -a 256 "$tmp/pdfium.tgz" | awk '{ print $1 }')"
+if [[ -z "$expected" || "$actual" != "$expected" ]]; then
+  echo "libpdfium checksum mismatch for $asset" >&2
+  rm -rf "$tmp"
+  exit 1
+fi
 tar -xzf "$tmp/pdfium.tgz" -C "$tmp" "$lib"
 cp "$tmp/$lib" "$DEST/"
 rm -rf "$tmp"

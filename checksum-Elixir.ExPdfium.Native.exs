@@ -1,6 +1,6 @@
 %{
-  "libex_pdfium-v0.1.0-nif-2.15-aarch64-apple-darwin.so.tar.gz" => "sha256:ba9c0b00165840642aaf1bd88d1670b107e49ea9fd313060a215d4fc023d1ab4",
-  "libex_pdfium-v0.1.0-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:9013d153d4db601924c7fb1622405ac11d6d4d3788cb574cc6a2d184dd989ba4",
-  "libex_pdfium-v0.1.0-nif-2.15-x86_64-apple-darwin.so.tar.gz" => "sha256:b0a197eb30672242a24bd6ea002cea4571df671895580657fb3b2d0439c65dbe",
-  "libex_pdfium-v0.1.0-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:22dddf4bcadf7fd849153cf1c5d2569b5b0244202877dc7f049a315ab3cbaf48",
+  "libex_pdfium-v0.4.3-nif-2.15-aarch64-apple-darwin.so.tar.gz" => "sha256:768ac3e7efcdfca2701549c8ac9d92f79c49fcf7b462511f785096b3f2fc3010",
+  "libex_pdfium-v0.4.3-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:86c61aad164a137e39908ff6b5050d383a5e729f678753d45bc38bcd8c78d24c",
+  "libex_pdfium-v0.4.3-nif-2.15-x86_64-apple-darwin.so.tar.gz" => "sha256:e62af26a056186e51680c84a1cfbbd67c0ced5252c30fad036331de189b8ad0f",
+  "libex_pdfium-v0.4.3-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:f978c9df519cd4c90c62de058553710be2e155d7d023adef97dc507b75b9926e",
 }
