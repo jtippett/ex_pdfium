@@ -10,16 +10,15 @@
 //!      through `PDFIUM_LOCK`. (The `sync`/`thread_safe` feature does NOT
 //!      serialize data calls — see `PDFIUM_LOCK`; we keep `sync` only for its
 //!      `Send + Sync`, so the instance can live in a `static`.)
-//!   2. `PdfDocument<'a>` borrows from `Pdfium`. A `'static` Pdfium (OnceLock)
-//!      makes `PdfDocument<'static>` storable in a ResourceArc.
+//!   2. `PdfDocument<'a>` borrows from `Pdfium`. A `'static` Pdfium cached in a
+//!      OnceLock makes `PdfDocument<'static>` storable in a ResourceArc.
 //!   3. pdfium work is synchronous and CPU-heavy -> every NIF is DirtyCpu.
 //!      (No tokio — unlike ex_bashkit.)
 
 // pdfium-touching code must never panic: a panic while our global `PDFIUM_LOCK`
 // (below) is held would poison it. We do recover from poison (see `pdfium_lock`),
 // but no-panic is the primary discipline. So forbid `unwrap`/`expect`; map errors
-// to atoms instead. The one exception is one-time library init, where failure to
-// load pdfium at all is genuinely fatal — that `expect` is allowed on `pdfium()`.
+// to atoms instead, including one-time dynamic-library initialization.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, OnceLock};
@@ -33,6 +32,10 @@ mod atoms {
         path,
         binary,
         bad_source,
+        invalid_string,
+        pdfium_init_failed,
+        cleanup_failed,
+        configuration_locked,
         // open/load errors, mapped from PdfiumError (we map, we don't invent)
         password_error,
         invalid_pdf,
@@ -62,6 +65,7 @@ mod atoms {
         // render: errors
         page_out_of_bounds,
         render_failed,
+        page_info_failed,
         unsupported_format,
         unsupported_background,
         bad_option,
@@ -99,6 +103,7 @@ mod atoms {
         attachment_not_found,
         attachment_failed,
         attachment_too_large,
+        form_failed,
         // forms: form technology (FPDF_GetFormType)
         none,
         acrobat,
@@ -162,6 +167,7 @@ mod atoms {
         bad_rotation,
         save_failed,
         create_failed,
+        bad_page_size,
         copy_failed,
         append_failed,
         delete_failed,
@@ -182,7 +188,7 @@ mod atoms {
 //
 // `'static` so documents can borrow it and live in resources. Initialized once;
 // every NIF goes through `pdfium()`.
-static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
+static PDFIUM: OnceLock<Result<Pdfium, ()>> = OnceLock::new();
 
 // Serializes EVERY pdfium operation. pdfium is not thread-safe, and — contrary to
 // what its name suggests — pdfium-render's `thread_safe`/`sync` feature only
@@ -200,21 +206,27 @@ static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
 // past its budget. So `Drop` hands the document to this dedicated cleanup thread,
 // which closes it under the lock off-scheduler. `PdfDocument` is `Send` (the
 // `sync` feature), so moving it across the channel is sound.
-static CLEANUP: OnceLock<Mutex<std::sync::mpsc::Sender<PdfDocument<'static>>>> = OnceLock::new();
+static CLEANUP: OnceLock<Option<Mutex<std::sync::mpsc::Sender<PdfDocument<'static>>>>> =
+    OnceLock::new();
 
-fn cleanup_sender() -> &'static Mutex<std::sync::mpsc::Sender<PdfDocument<'static>>> {
-    CLEANUP.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<PdfDocument<'static>>();
-        std::thread::spawn(move || {
-            // Blocks until a document arrives; ends when all senders drop (never,
-            // in practice — the static `Sender` lives for the process lifetime).
-            for document in rx {
-                let _lock = pdfium_lock();
-                drop(document); // FPDF_CloseDocument, serialized under the lock
-            }
-        });
-        Mutex::new(tx)
-    })
+fn cleanup_sender() -> Option<&'static Mutex<std::sync::mpsc::Sender<PdfDocument<'static>>>> {
+    CLEANUP
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<PdfDocument<'static>>();
+            std::thread::Builder::new()
+                .name("ex_pdfium_cleanup".to_string())
+                .spawn(move || {
+                    // Blocks until a document arrives; ends when all senders drop
+                    // (never in practice: the static Sender lives for the VM).
+                    for document in rx {
+                        let _lock = pdfium_lock();
+                        drop(document); // FPDF_CloseDocument, under the lock
+                    }
+                })
+                .ok()
+                .map(|_| Mutex::new(tx))
+        })
+        .as_ref()
 }
 
 // Dev/test only: the directory holding a dynamic libpdfium, supplied from Elixir
@@ -256,46 +268,45 @@ fn nif_sibling_dir() -> Option<String> {
     None
 }
 
-// One-time init: a failure to load pdfium at all is fatal, so `expect` here is
-// intentional (and runs before any pdfium call could hold the `sync` mutex).
-#[allow(clippy::expect_used)]
-fn pdfium() -> &'static Pdfium {
-    PDFIUM.get_or_init(|| {
-        // Optional static link (user-supplied libpdfium.a via the `static`
-        // feature; NOT the shipped path — release bundles a dynamic libpdfium).
-        #[cfg(feature = "static")]
-        let bindings = Pdfium::bind_to_statically_linked_library()
-            .expect("statically linked pdfium failed to bind");
+// One-time init. Cache either the initialized engine or a permanent failure, so
+// a missing/incompatible bundled library is an ordinary error rather than a NIF
+// panic on every call.
+fn pdfium() -> Result<&'static Pdfium, Atom> {
+    PDFIUM
+        .get_or_init(|| {
+            // Optional static link (user-supplied libpdfium.a via the `static`
+            // feature; NOT the shipped path — release bundles a dynamic libpdfium).
+            #[cfg(feature = "static")]
+            let bindings = Pdfium::bind_to_statically_linked_library().map_err(|_| ())?;
 
-        // Dynamic binding. Resolution order:
-        //   1. dir handed in from Elixir via set_dynamic_lib_dir/1 (dev/test),
-        //   2. an OS-level PDFIUM_DYNAMIC_LIB_PATH (set before the BEAM boots),
-        //   3. the NIF's own directory (production: libpdfium bundled beside it),
-        //   4. the system loader's search path.
-        #[cfg(not(feature = "static"))]
-        let bindings = {
-            let dir = DYNAMIC_LIB_DIR
-                .get()
-                .cloned()
-                .or_else(|| std::env::var("PDFIUM_DYNAMIC_LIB_PATH").ok())
-                .or_else(nif_sibling_dir);
-            let bound = match dir {
-                // A resolved dir is a libpdfium we were told about or that ships
-                // beside us; if it won't load, fail loudly rather than silently
-                // binding the pinned API against an unrelated system pdfium.
-                Some(dir) => {
-                    Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir))
-                }
-                None => Pdfium::bind_to_system_library(),
+            // Dynamic binding. Resolution order:
+            //   1. dir handed in from Elixir via set_dynamic_lib_dir/1 (dev/test),
+            //   2. an OS-level PDFIUM_DYNAMIC_LIB_PATH (set before the BEAM boots),
+            //   3. the NIF's own directory (production: libpdfium bundled beside it),
+            //   4. the system loader's search path.
+            #[cfg(not(feature = "static"))]
+            let bindings = {
+                let dir = DYNAMIC_LIB_DIR
+                    .get()
+                    .cloned()
+                    .or_else(|| std::env::var("PDFIUM_DYNAMIC_LIB_PATH").ok())
+                    .or_else(nif_sibling_dir);
+                let bound = match dir {
+                    // A resolved dir is a libpdfium we were told about or that ships
+                    // beside us; if it won't load, fail loudly rather than silently
+                    // binding the pinned API against an unrelated system pdfium.
+                    Some(dir) => {
+                        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir))
+                    }
+                    None => Pdfium::bind_to_system_library(),
+                };
+                bound.map_err(|_| ())?
             };
-            bound.expect(
-                "could not load libpdfium (bundled lib missing? else set \
-                 ExPdfium.Native.set_dynamic_lib_dir/1 or install pdfium)",
-            )
-        };
 
-        Pdfium::new(bindings)
-    })
+            Ok(Pdfium::new(bindings))
+        })
+        .as_ref()
+        .map_err(|_| atoms::pdfium_init_failed())
 }
 
 /// Acquire the global pdfium lock. `PDFIUM_LOCK` guards only `()`, so a poisoned
@@ -313,7 +324,7 @@ fn pdfium_lock() -> std::sync::MutexGuard<'static, ()> {
 /// `PDFIUM_LOCK`). `f` returns a tagged result so callers map errors to atoms.
 fn with_pdfium<R>(f: impl FnOnce(&'static Pdfium) -> Result<R, Atom>) -> Result<R, Atom> {
     let _lock = pdfium_lock();
-    f(pdfium())
+    f(pdfium()?)
 }
 
 // ── NIFs ─────────────────────────────────────────────────────────────────────
@@ -325,24 +336,27 @@ fn with_pdfium<R>(f: impl FnOnce(&'static Pdfium) -> Result<R, Atom>) -> Result<
 /// pdfium exposes no build-version string through its public C API, so we return
 /// a stable load-confirmation marker rather than inventing one.
 #[rustler::nif(schedule = "DirtyCpu")]
-fn pdfium_version() -> String {
+fn pdfium_version() -> Result<String, Atom> {
     // Bind/initialize pdfium under the global lock like every other pdfium touch,
     // so the one-time `FPDF_InitLibrary` can't race a concurrent first call.
     let _lock = pdfium_lock();
-    let _ = pdfium();
-    "pdfium loaded".to_string()
+    pdfium()?;
+    Ok("pdfium loaded".to_string())
 }
 
 /// Dev/test only: point the dynamic binding at a directory containing libpdfium,
-/// before the first pdfium call. No-op on the statically-linked (shipped) build,
+/// before the first pdfium call. No-op on a statically-linked custom build,
 /// and a no-op if pdfium has already been initialized.
-#[rustler::nif]
-fn set_dynamic_lib_dir(dir: String) -> rustler::Atom {
+#[rustler::nif(schedule = "DirtyCpu")]
+fn set_dynamic_lib_dir(dir: String) -> Result<Atom, Atom> {
+    validate_string(&dir)?;
     #[cfg(not(feature = "static"))]
-    let _ = DYNAMIC_LIB_DIR.set(dir);
+    if PDFIUM.get().is_some() || DYNAMIC_LIB_DIR.set(dir).is_err() {
+        return Err(atoms::configuration_locked());
+    }
     #[cfg(feature = "static")]
     let _ = dir;
-    atoms::ok()
+    Ok(atoms::ok())
 }
 
 // ── Document resource ────────────────────────────────────────────────────────
@@ -373,41 +387,26 @@ impl Drop for DocumentResource {
         let Some(document) = slot.take() else {
             return;
         };
-        // The common path takes no pdfium lock. The fallbacks below DO take
-        // `pdfium_lock()`; they're only reachable if the cleanup thread is gone,
-        // and they must not run on a thread already holding `PDFIUM_LOCK` (the
-        // non-reentrant std Mutex would self-deadlock). No NIF drops a doc's last
-        // ref while inside `with_pdfium`, so today that can't happen.
-        match cleanup_sender().lock() {
+        let Some(sender) = cleanup_sender() else {
+            // If the dedicated thread could not be created, there is no safe
+            // scheduler-friendly place to close this document. Leak only on this
+            // catastrophic OS-resource failure rather than blocking a normal BEAM
+            // scheduler or closing pdfium without the global lock.
+            std::mem::forget(document);
+            return;
+        };
+        match sender.lock() {
             Ok(tx) => {
-                // On send error (cleanup thread gone — shouldn't happen) the
-                // SendError owns the document; close it inline under the lock.
+                // A send error means the worker died. Avoid an inline close on a
+                // normal scheduler; retain safety at the cost of a one-off leak.
                 if let Err(returned) = tx.send(document) {
-                    let _lock = pdfium_lock();
-                    drop(returned.0);
+                    std::mem::forget(returned.0);
                 }
             }
             Err(_) => {
-                let _lock = pdfium_lock();
-                drop(document);
+                std::mem::forget(document);
             }
         }
-    }
-}
-
-// What `document_open` was handed. Either way we end up with an owned Vec and
-// load via `load_pdf_from_byte_vec`, which gives the document ownership of its
-// buffer and ties its lifetime only to the `'static` Pdfium — exactly what a
-// `'static` resource needs.
-enum Source {
-    Path(String),
-    Bytes(Vec<u8>),
-}
-
-fn io_error_atom(err: &std::io::Error) -> Atom {
-    match err.kind() {
-        std::io::ErrorKind::NotFound => atoms::enoent(),
-        _ => atoms::io_error(),
     }
 }
 
@@ -415,7 +414,7 @@ fn io_error_atom(err: &std::io::Error) -> Atom {
 // invent our own.
 fn open_error_atom(err: &PdfiumError) -> Atom {
     match err {
-        PdfiumError::IoError(e) => io_error_atom(e),
+        PdfiumError::IoError(_) => atoms::io_error(),
         PdfiumError::PdfiumLibraryInternalError(internal) => match internal {
             // pdfium reports the same error for a missing OR an incorrect password.
             PdfiumInternalError::PasswordError => atoms::password_error(),
@@ -428,17 +427,38 @@ fn open_error_atom(err: &PdfiumError) -> Atom {
     }
 }
 
-/// Phase 1: open from `{:path, p}` | `{:binary, bytes}`, optional password.
+fn validate_string(value: &str) -> Result<(), Atom> {
+    if value.contains('\0') {
+        Err(atoms::invalid_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_f32(value: f64) -> bool {
+    value.is_finite() && value >= f32::MIN as f64 && value <= f32::MAX as f64
+}
+
+fn valid_positive_f32(value: f64) -> bool {
+    valid_f32(value) && value > 0.0
+}
+
+fn valid_rect(left: f64, bottom: f64, right: f64, top: f64) -> bool {
+    [left, bottom, right, top].into_iter().all(valid_f32)
+}
+
+/// Phase 1: open from `{:binary, bytes}`, optional password. File IO is done on
+/// the Elixir side so this CPU-dirty NIF never blocks its scheduler on a path.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn document_open(
     source: Term,
     password: Option<String>,
 ) -> Result<ResourceArc<DocumentResource>, Atom> {
-    // Read the file outside the pdfium lock — file IO needn't be serialized.
-    let bytes = match decode_source(source)? {
-        Source::Bytes(bytes) => bytes,
-        Source::Path(path) => std::fs::read(&path).map_err(|e| io_error_atom(&e))?,
-    };
+    cleanup_sender().ok_or_else(atoms::cleanup_failed)?;
+    if let Some(password) = password.as_deref() {
+        validate_string(password)?;
+    }
+    let bytes = decode_source(source)?;
 
     with_pdfium(|pdfium| {
         let doc = pdfium
@@ -451,15 +471,11 @@ fn document_open(
     })
 }
 
-fn decode_source(term: Term) -> Result<Source, Atom> {
+fn decode_source(term: Term) -> Result<Vec<u8>, Atom> {
     let (tag, value): (Atom, Term) = term.decode().map_err(|_| atoms::bad_source())?;
-    if tag == atoms::path() {
-        Ok(Source::Path(
-            value.decode().map_err(|_| atoms::bad_source())?,
-        ))
-    } else if tag == atoms::binary() {
+    if tag == atoms::binary() {
         let bytes: Binary = value.decode().map_err(|_| atoms::bad_source())?;
-        Ok(Source::Bytes(bytes.as_slice().to_vec()))
+        Ok(bytes.as_slice().to_vec())
     } else {
         Err(atoms::bad_source())
     }
@@ -567,6 +583,9 @@ impl RenderOpts {
     // A present-but-wrong-typed or non-positive option is an error, not a silent
     // fallback to the default.
     fn from_term(opts: Term) -> Result<Self, Atom> {
+        if !opts.is_map() {
+            return Err(atoms::bad_option());
+        }
         let width = opt_i32(opts, atoms::width())?;
         let height = opt_i32(opts, atoms::height())?;
         let scale = opt_f64(opts, atoms::scale())?;
@@ -774,8 +793,11 @@ fn document_render_page<'a>(
 
         // Reject an oversized render before pdfium allocates the bitmap, so a
         // hostile page size can't drive a multi-GB allocation in-process.
-        if render.estimated_pixels(page.width().value as f64, page.height().value as f64)
-            > MAX_BITMAP_PIXELS as f64
+        let page_width = page.width().value as f64;
+        let page_height = page.height().value as f64;
+        if !valid_positive_f32(page_width)
+            || !valid_positive_f32(page_height)
+            || render.estimated_pixels(page_width, page_height) > MAX_BITMAP_PIXELS as f64
         {
             return Err(atoms::render_failed());
         }
@@ -784,17 +806,23 @@ fn document_render_page<'a>(
             .render_with_config(&render.to_config())
             .map_err(|_| atoms::render_failed())?;
 
-        let width = u32::try_from(bitmap.width()).unwrap_or(0);
-        let height = u32::try_from(bitmap.height()).unwrap_or(0);
+        let width = u32::try_from(bitmap.width()).map_err(|_| atoms::render_failed())?;
+        let height = u32::try_from(bitmap.height()).map_err(|_| atoms::render_failed())?;
+        if width == 0 || height == 0 || i64::from(width) * i64::from(height) > MAX_BITMAP_PIXELS {
+            return Err(atoms::render_failed());
+        }
         let bytes = bitmap.as_raw_bytes();
         // Derive stride from the actual buffer rather than assuming width*4 —
         // pdfium can pad rows for some formats. (Ours is 4-channel, so this is
         // width*4 in practice, but we don't bake that assumption in.)
-        let stride = if height == 0 {
-            0
-        } else {
-            (bytes.len() / height as usize) as u32
-        };
+        if bytes.len() % height as usize != 0 {
+            return Err(atoms::render_failed());
+        }
+        let stride =
+            u32::try_from(bytes.len() / height as usize).map_err(|_| atoms::render_failed())?;
+        if stride < width.checked_mul(4).ok_or_else(atoms::render_failed)? {
+            return Err(atoms::render_failed());
+        }
 
         let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
         binary.as_mut_slice().copy_from_slice(&bytes);
@@ -996,6 +1024,7 @@ fn document_search_text(
     whole_word: bool,
 ) -> Result<Vec<(String, Vec<Rect>)>, Atom> {
     let index = page_index_u16(page_index)?;
+    validate_string(&query)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1133,11 +1162,14 @@ fn document_page_info(
 
         let width = page.width().value as f64;
         let height = page.height().value as f64;
-        let rotation = match page.rotation() {
-            Ok(PdfPageRenderRotation::Degrees90) => 90,
-            Ok(PdfPageRenderRotation::Degrees180) => 180,
-            Ok(PdfPageRenderRotation::Degrees270) => 270,
-            _ => 0,
+        if !valid_positive_f32(width) || !valid_positive_f32(height) {
+            return Err(atoms::page_info_failed());
+        }
+        let rotation = match page.rotation().map_err(|_| atoms::page_info_failed())? {
+            PdfPageRenderRotation::None => 0,
+            PdfPageRenderRotation::Degrees90 => 90,
+            PdfPageRenderRotation::Degrees180 => 180,
+            PdfPageRenderRotation::Degrees270 => 270,
         };
         let label = page.label().map(|s| s.to_string());
 
@@ -1155,7 +1187,7 @@ fn document_page_info(
 }
 
 /// Phase 4: document permissions, as `(key, bool)` pairs. An undeterminable
-/// permission (unknown security handler) is reported as `false`.
+/// permission fails closed with `:unsupported_security`.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn document_permissions(doc: ResourceArc<DocumentResource>) -> Result<Vec<(Atom, bool)>, Atom> {
     with_pdfium(|_| {
@@ -1165,42 +1197,46 @@ fn document_permissions(doc: ResourceArc<DocumentResource>) -> Result<Vec<(Atom,
 
         // pdfium-render can only read permissions for security-handler revisions
         // 2-4; revision 5/6 (AES-256 / PDF 2.0) makes every `can_*` return Err.
-        // Probe once and surface that rather than reporting a misleading all-false
-        // set from a security-relevant API. (All `can_*` share this check, so on
-        // success the `unwrap_or(false)` below can't actually error.)
-        let print_high_quality = p
-            .can_print_high_quality()
-            .map_err(|_| atoms::unsupported_security())?;
         Ok(vec![
-            (atoms::print_high_quality(), print_high_quality),
+            (
+                atoms::print_high_quality(),
+                p.can_print_high_quality()
+                    .map_err(|_| atoms::unsupported_security())?,
+            ),
             (
                 atoms::print_low_quality(),
-                p.can_print_only_low_quality().unwrap_or(false),
+                p.can_print_only_low_quality()
+                    .map_err(|_| atoms::unsupported_security())?,
             ),
             (
                 atoms::assemble(),
-                p.can_assemble_document().unwrap_or(false),
+                p.can_assemble_document()
+                    .map_err(|_| atoms::unsupported_security())?,
             ),
             (
                 atoms::modify_content(),
-                p.can_modify_document_content().unwrap_or(false),
+                p.can_modify_document_content()
+                    .map_err(|_| atoms::unsupported_security())?,
             ),
             (
                 atoms::extract_text_and_graphics(),
-                p.can_extract_text_and_graphics().unwrap_or(false),
+                p.can_extract_text_and_graphics()
+                    .map_err(|_| atoms::unsupported_security())?,
             ),
             (
                 atoms::fill_form_fields(),
                 p.can_fill_existing_interactive_form_fields()
-                    .unwrap_or(false),
+                    .map_err(|_| atoms::unsupported_security())?,
             ),
             (
                 atoms::create_form_fields(),
-                p.can_create_new_interactive_form_fields().unwrap_or(false),
+                p.can_create_new_interactive_form_fields()
+                    .map_err(|_| atoms::unsupported_security())?,
             ),
             (
                 atoms::annotate(),
-                p.can_add_or_modify_text_annotations().unwrap_or(false),
+                p.can_add_or_modify_text_annotations()
+                    .map_err(|_| atoms::unsupported_security())?,
             ),
         ])
     })
@@ -1307,14 +1343,14 @@ fn document_links(doc: ResourceArc<DocumentResource>, page_index: u32) -> Result
 
 /// Phase 5: list embedded files as `(name, size)` pairs.
 #[rustler::nif(schedule = "DirtyCpu")]
-fn document_attachments(doc: ResourceArc<DocumentResource>) -> Result<Vec<(String, u32)>, Atom> {
+fn document_attachments(doc: ResourceArc<DocumentResource>) -> Result<Vec<(String, u64)>, Atom> {
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
         let list = document
             .attachments()
             .iter()
-            .map(|a| (a.name(), a.len() as u32))
+            .map(|a| (a.name(), a.len() as u64))
             .collect();
         Ok(list)
     })
@@ -1489,31 +1525,38 @@ type FormField = (
 // flag. We surface both rather than coercing a checkbox down to a string.
 // Push-button/signature/unknown carry no readable value.
 //
-// `is_checked()` can Err for a checkbox/radio whose state pdfium can't resolve;
-// we deliberately treat that as `false` (an unreadable toggle is reported as
-// not-checked rather than failing the whole field listing). `group_value()` for
-// these is the group's *selected* on-state, identical across the group's option
-// widgets — the per-option export name is not exposed by pdfium-render.
+// `group_value()` for checkbox/radio fields is the group's *selected* on-state,
+// identical across the group's option widgets — the per-option export name is
+// not exposed by pdfium-render. An unreadable checked state is an error rather
+// than a fabricated `false` result.
 fn form_field_value(
     field: &PdfFormField,
     field_type: PdfFormFieldType,
-) -> (Option<String>, Option<bool>) {
-    match field_type {
+) -> Result<(Option<String>, Option<bool>), Atom> {
+    Ok(match field_type {
         PdfFormFieldType::Text => (field.as_text_field().and_then(|f| f.value()), None),
         PdfFormFieldType::ComboBox => (field.as_combo_box_field().and_then(|f| f.value()), None),
         PdfFormFieldType::ListBox => (field.as_list_box_field().and_then(|f| f.value()), None),
-        PdfFormFieldType::Checkbox => match field.as_checkbox_field() {
-            Some(f) => (f.group_value(), Some(f.is_checked().unwrap_or(false))),
-            None => (None, None),
-        },
-        PdfFormFieldType::RadioButton => match field.as_radio_button_field() {
-            Some(f) => (f.group_value(), Some(f.is_checked().unwrap_or(false))),
-            None => (None, None),
-        },
+        PdfFormFieldType::Checkbox => {
+            let f = field.as_checkbox_field().ok_or_else(atoms::form_failed)?;
+            (
+                f.group_value(),
+                Some(f.is_checked().map_err(|_| atoms::form_failed())?),
+            )
+        }
+        PdfFormFieldType::RadioButton => {
+            let f = field
+                .as_radio_button_field()
+                .ok_or_else(atoms::form_failed)?;
+            (
+                f.group_value(),
+                Some(f.is_checked().map_err(|_| atoms::form_failed())?),
+            )
+        }
         PdfFormFieldType::PushButton | PdfFormFieldType::Signature | PdfFormFieldType::Unknown => {
             (None, None)
         }
-    }
+    })
 }
 
 /// Phase 6: AcroForm fields, one entry per widget annotation, across all pages.
@@ -1527,13 +1570,13 @@ fn document_form_fields(doc: ResourceArc<DocumentResource>) -> Result<Vec<FormFi
 
         let mut fields = Vec::new();
         for (page_index, page) in document.pages().iter().enumerate() {
-            let page_index = u32::try_from(page_index).unwrap_or(0);
+            let page_index = u32::try_from(page_index).map_err(|_| atoms::form_failed())?;
             for annotation in page.annotations().iter() {
                 let Some(field) = annotation.as_form_field() else {
                     continue;
                 };
                 let field_type = field.field_type();
-                let (value, checked) = form_field_value(field, field_type);
+                let (value, checked) = form_field_value(field, field_type)?;
                 let bounds = annotation.bounds().ok().map(|r| rect_of(&r));
                 fields.push((
                     field.name(),
@@ -1569,9 +1612,8 @@ fn bitmap_format_atom(f: PdfBitmapFormat) -> Atom {
         PdfBitmapFormat::BGR => atoms::bgr(),
         PdfBitmapFormat::BGRx => atoms::bgrx(),
         PdfBitmapFormat::BGRA => atoms::bgra(),
-        // pdfium only returns the four formats above; the remaining variant is a
-        // deprecated misspelled alias of BGRx. Treat anything else as BGRx.
-        _ => atoms::bgrx(),
+        #[allow(deprecated)]
+        PdfBitmapFormat::BRGx => atoms::bgrx(),
     }
 }
 
@@ -1658,20 +1700,20 @@ fn document_images(
             .pages()
             .get(index)
             .map_err(|_| atoms::page_out_of_bounds())?;
-        let images = page
-            .objects()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, obj)| {
-                let img = obj.as_image_object()?;
-                let width = img.width().ok().and_then(|p| u32::try_from(p).ok())?;
-                let height = img.height().ok().and_then(|p| u32::try_from(p).ok())?;
-                let bpp = img.bits_per_pixel().map(u32::from).unwrap_or(0);
-                let filters = img.filters().iter().map(|f| f.name().to_string()).collect();
-                let bounds = obj.bounds().ok().map(|q| rect_of(&q.to_rect()));
-                Some((i, width, height, bpp, filters, bounds, matrix_of(&obj)))
-            })
-            .collect();
+        let mut images = Vec::new();
+        for (i, obj) in page.objects().iter().enumerate() {
+            let Some(img) = obj.as_image_object() else {
+                continue;
+            };
+            let width = u32::try_from(img.width().map_err(|_| atoms::image_failed())?)
+                .map_err(|_| atoms::image_failed())?;
+            let height = u32::try_from(img.height().map_err(|_| atoms::image_failed())?)
+                .map_err(|_| atoms::image_failed())?;
+            let bpp = u32::from(img.bits_per_pixel().map_err(|_| atoms::image_failed())?);
+            let filters = img.filters().iter().map(|f| f.name().to_string()).collect();
+            let bounds = obj.bounds().ok().map(|q| rect_of(&q.to_rect()));
+            images.push((i, width, height, bpp, filters, bounds, matrix_of(&obj)));
+        }
         Ok(images)
     })
 }
@@ -1713,15 +1755,27 @@ fn document_image_data(
         // `get_raw_bitmap` doesn't null-check pdfium's handle; `format()` errors on
         // a null/unknown bitmap, so call it FIRST (before `as_raw_bytes()` reads the
         // buffer) to fail cleanly rather than touch a null buffer. Keep this order.
-        let format = bitmap_format_atom(bitmap.format().map_err(|_| atoms::image_failed())?);
-        let width = u32::try_from(bitmap.width()).unwrap_or(0);
-        let height = u32::try_from(bitmap.height()).unwrap_or(0);
+        let native_format = bitmap.format().map_err(|_| atoms::image_failed())?;
+        let format = bitmap_format_atom(native_format);
+        let width = u32::try_from(bitmap.width()).map_err(|_| atoms::image_failed())?;
+        let height = u32::try_from(bitmap.height()).map_err(|_| atoms::image_failed())?;
+        if width == 0 || height == 0 || i64::from(width) * i64::from(height) > MAX_BITMAP_PIXELS {
+            return Err(atoms::image_failed());
+        }
         let bytes = bitmap.as_raw_bytes();
-        let stride = if height == 0 {
-            0
-        } else {
-            (bytes.len() / height as usize) as u32
-        };
+        if bytes.len() % height as usize != 0 {
+            return Err(atoms::image_failed());
+        }
+        let stride =
+            u32::try_from(bytes.len() / height as usize).map_err(|_| atoms::image_failed())?;
+        let minimum_stride = width
+            .checked_mul(
+                u32::try_from(bytes_per_pixel(native_format)).map_err(|_| atoms::image_failed())?,
+            )
+            .ok_or_else(atoms::image_failed)?;
+        if stride < minimum_stride {
+            return Err(atoms::image_failed());
+        }
 
         let mut binary = OwnedBinary::new(bytes.len()).ok_or_else(atoms::alloc_failed)?;
         binary.as_mut_slice().copy_from_slice(&bytes);
@@ -1939,7 +1993,7 @@ fn color_of(c: (u8, u8, u8, u8)) -> PdfColor {
 // the codex-review note — but we reject it up front for a clear `:bad_option`
 // and to keep a non-finite value from ever reaching pdfium.)
 fn valid_stroke_width(width: f64) -> bool {
-    width.is_finite() && width >= 0.0
+    valid_f32(width) && width >= 0.0
 }
 
 // Map a Standard-14 font name to its built-in. Unknown -> None (-> :unknown_font).
@@ -1997,32 +2051,20 @@ fn check_page(document: &PdfDocument, page_index: u16) -> Result<(), Atom> {
     }
 }
 
-// Add a freshly-built object to a page and commit the page content. Takes the
-// page by immutable document borrow (the object also borrows the document
-// immutably, so the two coexist; the mutation goes through the page handle).
+// Add a freshly-built object to a page and commit the page content atomically.
 fn add_to_page(
     document: &PdfDocument,
     page_index: u16,
     object: PdfPageObject,
 ) -> Result<Atom, Atom> {
-    let mut page = document
-        .pages()
-        .get(page_index)
-        .map_err(|_| atoms::page_out_of_bounds())?;
-    page.objects_mut()
-        .add_object(object)
-        .map_err(|_| atoms::draw_failed())?;
-    page.regenerate_content()
-        .map_err(|_| atoms::draw_failed())?;
-    Ok(atoms::ok())
+    attach_then_style(document, page_index, object, |_| Ok(()))
 }
 
 // Attach a freshly-built object to a page, THEN style it. Adding first makes the
 // object page-owned, so any fallible styling that follows (set_fill_color,
 // translate, set_bitmap, …) can't drop an orphaned, never-added object — which
-// crashes pdfium. (The returned object is page-owned, so dropping it is a no-op.)
-// Used for objects whose styling happens after construction (text, images);
-// shapes carry their styling in the constructor and use `add_to_page`.
+// crashes pdfium. Stage under manual content regeneration so an error can remove
+// the attached object before returning; success regenerates exactly once.
 fn attach_then_style(
     document: &PdfDocument,
     page_index: u16,
@@ -2033,20 +2075,44 @@ fn attach_then_style(
         .pages()
         .get(page_index)
         .map_err(|_| atoms::page_out_of_bounds())?;
-    let mut added = page
-        .objects_mut()
-        .add_object(object)
-        .map_err(|_| atoms::draw_failed())?;
-    style(&mut added)?;
+    let prior_strategy = page.content_regeneration_strategy();
+    page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+    let object_index = page.objects().len();
+    let mut added = match page.objects_mut().add_object(object) {
+        Ok(added) => added,
+        Err(_) => {
+            page.set_content_regeneration_strategy(prior_strategy);
+            return Err(atoms::draw_failed());
+        }
+    };
+    let style_result = style(&mut added);
     drop(added); // release the borrow (no-op for a page-owned object) before regen
-    page.regenerate_content()
-        .map_err(|_| atoms::draw_failed())?;
+
+    if let Err(style_error) = style_result {
+        let rollback = page.objects_mut().remove_object_at_index(object_index);
+        page.set_content_regeneration_strategy(prior_strategy);
+        if rollback.is_err() {
+            return Err(atoms::draw_failed());
+        }
+        return Err(style_error);
+    }
+
+    if page.regenerate_content().is_err() {
+        let rollback = page.objects_mut().remove_object_at_index(object_index);
+        if rollback.is_ok() {
+            let _ = page.regenerate_content();
+        }
+        page.set_content_regeneration_strategy(prior_strategy);
+        return Err(atoms::draw_failed());
+    }
+    page.set_content_regeneration_strategy(prior_strategy);
     Ok(atoms::ok())
 }
 
 /// Document creation: a new, empty in-memory document.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn document_new() -> Result<ResourceArc<DocumentResource>, Atom> {
+    cleanup_sender().ok_or_else(atoms::cleanup_failed)?;
     with_pdfium(|pdfium| {
         let doc = pdfium
             .create_new_pdf()
@@ -2066,6 +2132,9 @@ fn document_add_page(
     height: f64,
     at: i64,
 ) -> Result<Atom, Atom> {
+    if !valid_positive_f32(width) || !valid_positive_f32(height) {
+        return Err(atoms::bad_page_size());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -2108,6 +2177,10 @@ fn document_draw_text(
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
     let builtin = font_builtin(&font).ok_or_else(atoms::unknown_font)?;
+    validate_string(&text)?;
+    if !valid_f32(x) || !valid_f32(y) || !valid_positive_f32(size) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -2139,7 +2212,9 @@ fn document_draw_rectangle(
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
-    if stroke.is_some() && !valid_stroke_width(stroke_width) {
+    if !valid_rect(left, bottom, right, top)
+        || (stroke.is_some() && !valid_stroke_width(stroke_width))
+    {
         return Err(atoms::bad_option());
     }
     with_pdfium(|_| {
@@ -2173,7 +2248,7 @@ fn document_draw_line(
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
-    if !valid_stroke_width(stroke_width) {
+    if ![x1, y1, x2, y2].into_iter().all(valid_f32) || !valid_stroke_width(stroke_width) {
         return Err(atoms::bad_option());
     }
     with_pdfium(|_| {
@@ -2208,7 +2283,20 @@ fn document_draw_circle(
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
-    if stroke.is_some() && !valid_stroke_width(stroke_width) {
+    // pdfium-render's `new_circle_at` derives the bounding box as `cx ± radius`
+    // and `cy ± radius` in f32, so guarding only the inputs is insufficient: a
+    // finite-but-large center/radius pair (e.g. 3.0e38 each) can still overflow a
+    // derived extent to a non-finite f32 before it reaches pdfium. Validate the
+    // extents too.
+    if !valid_f32(cx)
+        || !valid_f32(cy)
+        || !valid_positive_f32(radius)
+        || !valid_f32(cx - radius)
+        || !valid_f32(cx + radius)
+        || !valid_f32(cy - radius)
+        || !valid_f32(cy + radius)
+        || (stroke.is_some() && !valid_stroke_width(stroke_width))
+    {
         return Err(atoms::bad_option());
     }
     with_pdfium(|_| {
@@ -2258,16 +2346,41 @@ fn document_draw_image(
     if img_width > MAX_RENDER_DIMENSION as u32 || img_height > MAX_RENDER_DIMENSION as u32 {
         return Err(atoms::bad_image_data());
     }
-    let packed_row = img_width as usize * bytes_per_pixel(pdf_format);
-    if data.len() != packed_row * img_height as usize {
+    let pixels = u64::from(img_width)
+        .checked_mul(u64::from(img_height))
+        .ok_or_else(atoms::bad_image_data)?;
+    if pixels > MAX_BITMAP_PIXELS as u64
+        || !valid_rect(left, bottom, right, top)
+        || !valid_f32(right - left)
+        || !valid_f32(top - bottom)
+    {
+        return Err(atoms::bad_image_data());
+    }
+    let packed_row = (img_width as usize)
+        .checked_mul(bytes_per_pixel(pdf_format))
+        .ok_or_else(atoms::bad_image_data)?;
+    let packed_len = packed_row
+        .checked_mul(img_height as usize)
+        .ok_or_else(atoms::bad_image_data)?;
+    if data.len() != packed_len {
         return Err(atoms::bad_image_data());
     }
     // pdfium lays bitmap rows out with a 4-byte-aligned stride; repack the packed
     // input into a buffer with that stride so pdfium never reads past it. (The
     // padding is only non-trivial for the 1-/3-byte :gray / :bgr formats; 4-byte
     // formats are already aligned, so this is a straight copy for them.)
-    let stride = (packed_row + 3) & !3;
-    let mut buffer = vec![0u8; stride * img_height as usize];
+    let stride = packed_row
+        .checked_add(3)
+        .map(|value| value & !3)
+        .ok_or_else(atoms::bad_image_data)?;
+    let buffer_len = stride
+        .checked_mul(img_height as usize)
+        .ok_or_else(atoms::bad_image_data)?;
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(buffer_len)
+        .map_err(|_| atoms::alloc_failed())?;
+    buffer.resize(buffer_len, 0);
     for (y, src_row) in data.as_slice().chunks_exact(packed_row).enumerate() {
         buffer[y * stride..y * stride + packed_row].copy_from_slice(src_row);
     }
@@ -2322,6 +2435,22 @@ fn annot_rect(l: f64, b: f64, r: f64, t: f64) -> PdfRect {
     PdfRect::new_from_values(b as f32, l as f32, t as f32, r as f32)
 }
 
+// `create_*_annotation()` attaches before setting all requested properties. If
+// construction or styling fails, delete the new slot so an error never means a
+// half-configured annotation was left in the document.
+fn rollback_annotation(page: &mut PdfPage<'_>, annotation_index: usize) -> Result<(), Atom> {
+    let annotations = page.annotations_mut();
+    if annotations.len() <= annotation_index {
+        return Ok(());
+    }
+    let annotation = annotations
+        .get(annotation_index)
+        .map_err(|_| atoms::annotate_failed())?;
+    annotations
+        .delete_annotation(annotation)
+        .map_err(|_| atoms::annotate_failed())
+}
+
 /// Annotation authoring: a text (sticky-note) annotation at `(x, y)`.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn document_add_text_annotation(
@@ -2333,6 +2462,10 @@ fn document_add_text_annotation(
     color: (u8, u8, u8, u8),
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
+    validate_string(&text)?;
+    if !valid_f32(x) || !valid_f32(y) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -2340,16 +2473,23 @@ fn document_add_text_annotation(
             .pages()
             .get(index)
             .map_err(|_| atoms::page_out_of_bounds())?;
-        let mut annotation = page
-            .annotations_mut()
-            .create_text_annotation(&text)
-            .map_err(|_| atoms::annotate_failed())?;
-        annotation
-            .set_position(PdfPoints::new(x as f32), PdfPoints::new(y as f32))
-            .map_err(|_| atoms::annotate_failed())?;
-        annotation
-            .set_fill_color(color_of(color))
-            .map_err(|_| atoms::annotate_failed())?;
+        let annotation_index = page.annotations().len();
+        let result = (|| -> Result<(), Atom> {
+            let mut annotation = page
+                .annotations_mut()
+                .create_text_annotation(&text)
+                .map_err(|_| atoms::annotate_failed())?;
+            annotation
+                .set_position(PdfPoints::new(x as f32), PdfPoints::new(y as f32))
+                .map_err(|_| atoms::annotate_failed())?;
+            annotation
+                .set_fill_color(color_of(color))
+                .map_err(|_| atoms::annotate_failed())
+        })();
+        if let Err(error) = result {
+            rollback_annotation(&mut page, annotation_index)?;
+            return Err(error);
+        }
         Ok(atoms::ok())
     })
 }
@@ -2369,6 +2509,10 @@ fn document_add_free_text_annotation(
     stroke: Option<(u8, u8, u8, u8)>,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
+    validate_string(&text)?;
+    if !valid_rect(l, b, r, t) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -2376,22 +2520,30 @@ fn document_add_free_text_annotation(
             .pages()
             .get(index)
             .map_err(|_| atoms::page_out_of_bounds())?;
-        let mut annotation = page
-            .annotations_mut()
-            .create_free_text_annotation(&text)
-            .map_err(|_| atoms::annotate_failed())?;
-        annotation
-            .set_bounds(annot_rect(l, b, r, t))
-            .map_err(|_| atoms::annotate_failed())?;
-        if let Some(c) = fill {
-            annotation
-                .set_fill_color(color_of(c))
+        let annotation_index = page.annotations().len();
+        let result = (|| -> Result<(), Atom> {
+            let mut annotation = page
+                .annotations_mut()
+                .create_free_text_annotation(&text)
                 .map_err(|_| atoms::annotate_failed())?;
-        }
-        if let Some(c) = stroke {
             annotation
-                .set_stroke_color(color_of(c))
+                .set_bounds(annot_rect(l, b, r, t))
                 .map_err(|_| atoms::annotate_failed())?;
+            if let Some(c) = fill {
+                annotation
+                    .set_fill_color(color_of(c))
+                    .map_err(|_| atoms::annotate_failed())?;
+            }
+            if let Some(c) = stroke {
+                annotation
+                    .set_stroke_color(color_of(c))
+                    .map_err(|_| atoms::annotate_failed())?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            rollback_annotation(&mut page, annotation_index)?;
+            return Err(error);
         }
         Ok(atoms::ok())
     })
@@ -2411,6 +2563,9 @@ fn document_add_square_annotation(
     stroke: Option<(u8, u8, u8, u8)>,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
+    if !valid_rect(l, b, r, t) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -2418,22 +2573,30 @@ fn document_add_square_annotation(
             .pages()
             .get(index)
             .map_err(|_| atoms::page_out_of_bounds())?;
-        let mut annotation = page
-            .annotations_mut()
-            .create_square_annotation()
-            .map_err(|_| atoms::annotate_failed())?;
-        annotation
-            .set_bounds(annot_rect(l, b, r, t))
-            .map_err(|_| atoms::annotate_failed())?;
-        if let Some(c) = fill {
-            annotation
-                .set_fill_color(color_of(c))
+        let annotation_index = page.annotations().len();
+        let result = (|| -> Result<(), Atom> {
+            let mut annotation = page
+                .annotations_mut()
+                .create_square_annotation()
                 .map_err(|_| atoms::annotate_failed())?;
-        }
-        if let Some(c) = stroke {
             annotation
-                .set_stroke_color(color_of(c))
+                .set_bounds(annot_rect(l, b, r, t))
                 .map_err(|_| atoms::annotate_failed())?;
+            if let Some(c) = fill {
+                annotation
+                    .set_fill_color(color_of(c))
+                    .map_err(|_| atoms::annotate_failed())?;
+            }
+            if let Some(c) = stroke {
+                annotation
+                    .set_stroke_color(color_of(c))
+                    .map_err(|_| atoms::annotate_failed())?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            rollback_annotation(&mut page, annotation_index)?;
+            return Err(error);
         }
         Ok(atoms::ok())
     })
@@ -2452,6 +2615,10 @@ fn document_add_link_annotation(
     uri: String,
 ) -> Result<Atom, Atom> {
     let index = page_index_u16(page_index)?;
+    validate_string(&uri)?;
+    if !valid_rect(l, b, r, t) {
+        return Err(atoms::bad_option());
+    }
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
@@ -2459,13 +2626,20 @@ fn document_add_link_annotation(
             .pages()
             .get(index)
             .map_err(|_| atoms::page_out_of_bounds())?;
-        let mut annotation = page
-            .annotations_mut()
-            .create_link_annotation(&uri)
-            .map_err(|_| atoms::annotate_failed())?;
-        annotation
-            .set_bounds(annot_rect(l, b, r, t))
-            .map_err(|_| atoms::annotate_failed())?;
+        let annotation_index = page.annotations().len();
+        let result = (|| -> Result<(), Atom> {
+            let mut annotation = page
+                .annotations_mut()
+                .create_link_annotation(&uri)
+                .map_err(|_| atoms::annotate_failed())?;
+            annotation
+                .set_bounds(annot_rect(l, b, r, t))
+                .map_err(|_| atoms::annotate_failed())
+        })();
+        if let Err(error) = result {
+            rollback_annotation(&mut page, annotation_index)?;
+            return Err(error);
+        }
         Ok(atoms::ok())
     })
 }
