@@ -18,6 +18,13 @@ defmodule ExPdfiumTest do
     test "pdfium_version/0 returns a string" do
       assert is_binary(ExPdfium.pdfium_version())
     end
+
+    test "dynamic library configuration is locked after test setup" do
+      assert {:error, :configuration_locked} =
+               ExPdfium.Native.set_dynamic_lib_dir(Path.expand("priv/pdfium"))
+
+      assert is_binary(ExPdfium.pdfium_version())
+    end
   end
 
   describe "Phase 1: open + page_count" do
@@ -41,6 +48,12 @@ defmodule ExPdfiumTest do
       # Leading "%PDF" routes open/2 to the binary path; the rest is garbage.
       assert {:error, :invalid_pdf} = ExPdfium.open("%PDF-1.7\nnot really a pdf")
     end
+
+    test "the CPU-dirty native parser refuses filesystem paths" do
+      assert {:error, :bad_source} = ExPdfium.Native.document_open({:path, @sample}, nil)
+      assert {:ok, doc} = ExPdfium.open_file(@sample)
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+    end
   end
 
   describe "Phase 1: password-protected documents" do
@@ -53,6 +66,14 @@ defmodule ExPdfiumTest do
     end
 
     test "opening with the correct password succeeds" do
+      assert {:ok, doc} = ExPdfium.open(@encrypted, password: "secret")
+      assert {:ok, 2} = ExPdfium.page_count(doc)
+    end
+
+    test "an embedded NUL password is rejected without poisoning later opens" do
+      assert {:error, :invalid_string} =
+               ExPdfium.open(@encrypted, password: <<"secret", 0, "suffix">>)
+
       assert {:ok, doc} = ExPdfium.open(@encrypted, password: "secret")
       assert {:ok, 2} = ExPdfium.page_count(doc)
     end
@@ -222,6 +243,13 @@ defmodule ExPdfiumTest do
       assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, dpi: "300")
       assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, width: 0)
       assert {:error, :bad_option} = ExPdfium.render_page(doc, 0, scale: -1.0)
+    end
+
+    test "the native boundary rejects a non-map options term", %{doc: doc} do
+      assert {:error, :bad_option} =
+               ExPdfium.Native.document_render_page(doc.ref, 0, :not_a_map)
+
+      assert {:ok, 2} = ExPdfium.page_count(doc)
     end
 
     test ":transparent background renders", %{doc: doc} do
@@ -469,6 +497,13 @@ defmodule ExPdfiumTest do
 
     test "an empty query is rejected", %{doc: doc} do
       assert {:error, :empty_query} = ExPdfium.search_text(doc, 0, "")
+    end
+
+    test "an embedded NUL query is rejected without truncation or poisoning", %{doc: doc} do
+      assert {:error, :invalid_string} =
+               ExPdfium.search_text(doc, 0, <<"pdfium", 0, "absent">>)
+
+      assert {:ok, [_]} = ExPdfium.search_text(doc, 0, "pdfium")
     end
 
     test "search error cases", %{doc: doc} do
@@ -1164,7 +1199,7 @@ defmodule ExPdfiumTest do
       {:ok, color} = ExPdfium.render_page(doc, 0, dpi: 72)
       {:ok, gray} = ExPdfium.render_page(doc, 0, dpi: 72, grayscale: true)
 
-      <<r, g, b, _, _::binary>> = color.data
+      <<r, _g, b, _, _::binary>> = color.data
       # The color render is genuinely red (R > B); grayscale equalizes the channels.
       assert r > b
       <<gr, gg, gb, _, _::binary>> = gray.data
@@ -1323,6 +1358,17 @@ defmodule ExPdfiumTest do
       {:ok, doc} = ExPdfium.new()
       assert {:error, :bad_page_size} = ExPdfium.add_page(doc, :a0)
     end
+
+    test "non-positive and unrepresentable custom sizes do not add a page" do
+      {:ok, doc} = ExPdfium.new()
+
+      assert {:error, :bad_page_size} = ExPdfium.add_page(doc, {0, 100})
+      assert {:error, :bad_page_size} = ExPdfium.add_page(doc, {1.0e300, 100})
+      assert {:ok, 0} = ExPdfium.page_count(doc)
+
+      assert {:ok, ^doc} = ExPdfium.add_page(doc, {100, 100})
+      assert {:ok, 1} = ExPdfium.page_count(doc)
+    end
   end
 
   describe "Creating: draw_text/5" do
@@ -1370,6 +1416,21 @@ defmodule ExPdfiumTest do
       assert {:ok, ^doc} =
                ExPdfium.draw_text(doc, 0, {72, 700}, "translucent", color: {0, 0, 0, 128})
     end
+
+    test "invalid text and coordinates have no partial side effect" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      assert {:error, :invalid_string} =
+               ExPdfium.draw_text(doc, 0, {10, 10}, <<"visible", 0, "hidden">>)
+
+      assert {:error, :bad_option} = ExPdfium.draw_text(doc, 0, {1.0e300, 10}, "x")
+      assert {:error, :bad_option} = ExPdfium.draw_text(doc, 0, {10, 10}, "x", size: 1.0e300)
+      assert {:ok, []} = ExPdfium.page_objects(doc, 0)
+
+      assert {:ok, ^doc} = ExPdfium.draw_text(doc, 0, {10, 10}, "valid")
+      assert {:ok, [_]} = ExPdfium.page_objects(doc, 0)
+    end
   end
 
   describe "Creating: shapes" do
@@ -1410,6 +1471,25 @@ defmodule ExPdfiumTest do
       # A negative stroke width with no stroke is harmless (ignored).
       assert {:ok, ^doc} =
                ExPdfium.draw_rectangle(doc, 0, bounds, fill: {0, 0, 0}, stroke_width: -1.0)
+    end
+
+    test "unrepresentable shape geometry has no partial side effect" do
+      {:ok, doc} = ExPdfium.new()
+      {:ok, doc} = ExPdfium.add_page(doc, :letter)
+
+      assert {:error, :bad_option} =
+               ExPdfium.draw_line(doc, 0, {0, 0}, {1.0e300, 10}, stroke: {0, 0, 0})
+
+      assert {:error, :bad_option} =
+               ExPdfium.draw_circle(doc, 0, {10, 10}, 1.0e300, fill: {0, 0, 0})
+
+      # cx and radius are each representable as f32, but the derived extent
+      # cx + radius overflows to infinity inside pdfium-render's f32 bbox math.
+      assert {:error, :bad_option} =
+               ExPdfium.draw_circle(doc, 0, {3.0e38, 10}, 3.0e38, fill: {0, 0, 0})
+
+      assert {:ok, []} = ExPdfium.page_objects(doc, 0)
+      assert {:ok, ^doc} = ExPdfium.draw_circle(doc, 0, {10, 10}, 5, fill: {0, 0, 0})
     end
   end
 
@@ -1612,6 +1692,26 @@ defmodule ExPdfiumTest do
 
       {:ok, links} = ExPdfium.links(doc, 0)
       assert Enum.any?(links, &(&1.uri == "https://example.com"))
+    end
+
+    test "embedded NUL annotation strings are rejected without a partial annotation" do
+      doc = blank_page()
+      bounds = %{left: 72, bottom: 690, right: 300, top: 705}
+
+      assert {:error, :invalid_string} =
+               ExPdfium.add_text_annotation(doc, 0, {72, 700}, <<"shown", 0, "hidden">>)
+
+      assert {:error, :invalid_string} =
+               ExPdfium.add_free_text_annotation(doc, 0, bounds, <<"shown", 0, "hidden">>)
+
+      assert {:error, :invalid_string} =
+               ExPdfium.add_link_annotation(doc, 0, bounds, <<"https://example.com", 0, "x">>)
+
+      assert {:ok, []} = ExPdfium.annotations(doc, 0)
+      assert {:ok, []} = ExPdfium.links(doc, 0)
+
+      assert {:ok, ^doc} = ExPdfium.add_link_annotation(doc, 0, bounds, "https://example.com")
+      assert {:ok, [%{uri: "https://example.com"}]} = ExPdfium.links(doc, 0)
     end
 
     test "annotations persist across save/reopen" do
@@ -1977,6 +2077,10 @@ defmodule ExPdfiumTest do
       assert {:error, :invalid_date} = ExPdfium.parse_pdf_date(nil)
       assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("not a date")
       assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("D:20241399000000")
+      assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("D:20240101garbage")
+      assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("D:20240101120000+")
+      assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("D:20240101120000+24'00'")
+      assert {:error, :invalid_date} = ExPdfium.parse_pdf_date("D:20240101120000+01'60'")
     end
   end
 
