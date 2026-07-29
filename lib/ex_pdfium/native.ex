@@ -74,10 +74,17 @@ defmodule ExPdfium.Native do
   def document_attachments(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_attachment_data(_doc, _index), do: :erlang.nif_error(:nif_not_loaded)
 
-  # Phase 6 — forms & annotations (read).
+  # Phase 6 — forms & annotations (read/write).
   def document_form_type(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_form_fields(_doc), do: :erlang.nif_error(:nif_not_loaded)
   def document_annotations(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
+
+  # v0.3 — form field setters.
+  def document_set_form_field_value(_doc, _page, _name, _value),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def document_set_form_field_checked(_doc, _page, _name, _checked),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   # Image & object extraction.
   def document_page_objects(_doc, _page_index), do: :erlang.nif_error(:nif_not_loaded)
@@ -134,4 +141,8 @@ defmodule ExPdfium.Native do
   def document_extract_pages(_src, _indices), do: :erlang.nif_error(:nif_not_loaded)
   def document_delete_pages(_doc, _from, _to), do: :erlang.nif_error(:nif_not_loaded)
   def document_rotate_page(_doc, _page_index, _degrees), do: :erlang.nif_error(:nif_not_loaded)
+
+  # v0.3 — page box setters.
+  def document_set_page_box(_doc, _page, _box_type, _l, _b, _r, _t),
+    do: :erlang.nif_error(:nif_not_loaded)
 end

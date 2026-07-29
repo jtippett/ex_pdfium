@@ -304,6 +304,29 @@ defmodule ExPdfiumTest do
       assert Enum.all?(sizes, &(&1 > 0))
       assert is_binary(ExPdfium.pdfium_version())
     end
+
+    test ":print_quality renders the page without errors", %{doc: doc} do
+      assert {:ok, %ExPdfium.Bitmap{}} =
+               ExPdfium.render_page(doc, 0, dpi: 72, print_quality: true)
+    end
+
+    test ":print_quality false (default) and true both produce valid bitmaps", %{doc: doc} do
+      {:ok, normal} = ExPdfium.render_page(doc, 0, dpi: 72)
+      {:ok, print} = ExPdfium.render_page(doc, 0, dpi: 72, print_quality: true)
+
+      assert byte_size(normal.data) == normal.width * normal.height * 4
+      assert byte_size(print.data) == print.width * print.height * 4
+      assert {normal.width, normal.height} == {print.width, print.height}
+    end
+
+    test ":print_quality with :transparent background", %{doc: doc} do
+      assert {:ok, %ExPdfium.Bitmap{}} =
+               ExPdfium.render_page(doc, 0,
+                 dpi: 72,
+                 print_quality: true,
+                 background: :transparent
+               )
+    end
   end
 
   describe "Phase 3: text extraction" do
@@ -615,6 +638,72 @@ defmodule ExPdfiumTest do
     end
   end
 
+  describe "Writing: page box setters" do
+    test "set_page_box/7 sets crop, media, bleed, trim, and art boxes" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      {:ok, info} = ExPdfium.page_info(doc, 0)
+      assert info.boxes.crop == nil
+
+      :ok = ExPdfium.set_page_box(doc, 0, :crop_box, 72, 72, 540, 720)
+      {:ok, info} = ExPdfium.page_info(doc, 0)
+      assert info.boxes.crop == %{left: 72.0, bottom: 72.0, right: 540.0, top: 720.0}
+
+      :ok = ExPdfium.set_page_box(doc, 0, :media_box, 0, 0, 612, 792)
+      {:ok, info} = ExPdfium.page_info(doc, 0)
+      assert info.boxes.media == %{left: 0.0, bottom: 0.0, right: 612.0, top: 792.0}
+
+      :ok = ExPdfium.set_page_box(doc, 0, :bleed_box, 18, 18, 594, 774)
+      {:ok, info} = ExPdfium.page_info(doc, 0)
+      assert info.boxes.bleed == %{left: 18.0, bottom: 18.0, right: 594.0, top: 774.0}
+
+      :ok = ExPdfium.set_page_box(doc, 0, :trim_box, 36, 36, 576, 756)
+      {:ok, info} = ExPdfium.page_info(doc, 0)
+      assert info.boxes.trim == %{left: 36.0, bottom: 36.0, right: 576.0, top: 756.0}
+
+      :ok = ExPdfium.set_page_box(doc, 0, :art_box, 0, 0, 612, 792)
+      {:ok, info} = ExPdfium.page_info(doc, 0)
+      assert info.boxes.art == %{left: 0.0, bottom: 0.0, right: 612.0, top: 792.0}
+    end
+
+    test "set_page_box rejects an unknown box type" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      assert {:error, :bad_option} = ExPdfium.set_page_box(doc, 0, :unknown_box, 0, 0, 100, 100)
+    end
+
+    test "set_page_box rejects an oversized rectangle" do
+      {:ok, doc} = ExPdfium.open(@sample)
+
+      assert {:error, :bad_option} =
+               ExPdfium.set_page_box(doc, 0, :media_box, 0, 0, 1.0e40, 792)
+    end
+
+    test "set_page_box on a closed document" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      :ok = ExPdfium.close(doc)
+
+      assert {:error, :document_closed} =
+               ExPdfium.set_page_box(doc, 0, :crop_box, 72, 72, 540, 720)
+    end
+
+    test "set_page_box with an out-of-bounds page" do
+      {:ok, doc} = ExPdfium.open(@sample)
+
+      assert {:error, :page_out_of_bounds} =
+               ExPdfium.set_page_box(doc, 99, :crop_box, 0, 0, 100, 100)
+    end
+
+    test "set_page_box persists after save and re-open" do
+      {:ok, doc} = ExPdfium.open(@sample)
+      :ok = ExPdfium.set_page_box(doc, 0, :crop_box, 72, 72, 540, 720)
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      :ok = ExPdfium.close(doc)
+
+      {:ok, doc2} = ExPdfium.open(bytes)
+      {:ok, info} = ExPdfium.page_info(doc2, 0)
+      assert info.boxes.crop == %{left: 72.0, bottom: 72.0, right: 540.0, top: 720.0}
+    end
+  end
+
   describe "Phase 4: permissions" do
     test "an unencrypted document permits everything" do
       {:ok, doc} = ExPdfium.open(@sample)
@@ -800,6 +889,91 @@ defmodule ExPdfiumTest do
       :ok = ExPdfium.close(doc)
       assert {:error, :document_closed} = ExPdfium.form_type(doc)
       assert {:error, :document_closed} = ExPdfium.form_fields(doc)
+    end
+  end
+
+  describe "Writing: form field setters" do
+    test "set_form_field_value/4 sets a text field's value" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      :ok = ExPdfium.set_form_field_value(doc, 0, "full_name", "Alice")
+      {:ok, fields} = ExPdfium.form_fields(doc)
+      assert hd(Enum.filter(fields, &(&1.name == "full_name"))).value == "Alice"
+    end
+
+    test "set_form_field_value/4 returns :form_failed for a non-text field" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:error, :form_failed} = ExPdfium.set_form_field_value(doc, 0, "subscribe", "yes")
+    end
+
+    test "set_form_field_value/4 returns :form_failed for a missing field" do
+      {:ok, doc} = ExPdfium.open(@forms)
+
+      assert {:error, :form_failed} =
+               ExPdfium.set_form_field_value(doc, 0, "nonexistent", "x")
+    end
+
+    test "set_form_field_checked/4 checks a checkbox" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      {:ok, fields} = ExPdfium.form_fields(doc)
+      subscribe = hd(Enum.filter(fields, &(&1.name == "subscribe")))
+      assert subscribe.checked == true
+
+      :ok = ExPdfium.set_form_field_checked(doc, 0, "subscribe", false)
+      {:ok, fields} = ExPdfium.form_fields(doc)
+      assert hd(Enum.filter(fields, &(&1.name == "subscribe"))).checked == false
+
+      :ok = ExPdfium.set_form_field_checked(doc, 0, "subscribe", true)
+      {:ok, fields} = ExPdfium.form_fields(doc)
+      assert hd(Enum.filter(fields, &(&1.name == "subscribe"))).checked == true
+    end
+
+    test "set_form_field_checked/4 returns :form_failed for a text field" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      assert {:error, :form_failed} = ExPdfium.set_form_field_checked(doc, 0, "full_name", true)
+    end
+
+    test "set_form_field_checked/4 on a closed document" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      :ok = ExPdfium.close(doc)
+
+      assert {:error, :document_closed} =
+               ExPdfium.set_form_field_checked(doc, 0, "subscribe", true)
+    end
+
+    test "set_form_field_value/4 persists after save and re-open" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      :ok = ExPdfium.set_form_field_value(doc, 0, "full_name", "Bob")
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      :ok = ExPdfium.close(doc)
+
+      {:ok, doc2} = ExPdfium.open(bytes)
+      {:ok, fields} = ExPdfium.form_fields(doc2)
+      assert hd(Enum.filter(fields, &(&1.name == "full_name"))).value == "Bob"
+    end
+
+    test "set_form_field_checked/4 persists after save and re-open" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      {:ok, fields} = ExPdfium.form_fields(doc)
+      subscribe = hd(Enum.filter(fields, &(&1.name == "subscribe")))
+      assert subscribe.checked == true
+
+      :ok = ExPdfium.set_form_field_checked(doc, 0, "subscribe", false)
+      {:ok, bytes} = ExPdfium.save_to_bytes(doc)
+      :ok = ExPdfium.close(doc)
+
+      {:ok, doc2} = ExPdfium.open(bytes)
+      {:ok, fields} = ExPdfium.form_fields(doc2)
+      assert hd(Enum.filter(fields, &(&1.name == "subscribe"))).checked == false
+    end
+
+    test "set_form_field_value/4 and set_form_field_checked/4 on a wrong page" do
+      {:ok, doc} = ExPdfium.open(@forms)
+      # forms.pdf only has one page; page 1 doesn't exist.
+      assert {:error, :page_out_of_bounds} =
+               ExPdfium.set_form_field_value(doc, 1, "full_name", "x")
+
+      assert {:error, :page_out_of_bounds} =
+               ExPdfium.set_form_field_checked(doc, 1, "subscribe", true)
     end
   end
 
