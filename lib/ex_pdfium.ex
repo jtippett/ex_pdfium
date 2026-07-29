@@ -10,13 +10,14 @@ defmodule ExPdfium do
   > permissions, structure (bookmarks/links/attachments), forms/annotations, and
   > images & page objects.
   > **Write:** page assembly — merge (`append/2`), split/subset
-  > (`extract_pages/2`), `delete_pages/2`, `rotate_page/3`; document creation —
+  > (`extract_pages/2`), `delete_pages/2`, `rotate_page/3`; page properties —
+  > `set_page_box/7` (crop, media, bleed, trim, art); form filling —
+  > `set_form_field_value/4`, `set_form_field_checked/4`; document creation —
   > `new/0`, `add_page/3`, and `draw_text`/`draw_rectangle`/`draw_line`/
   > `draw_circle`/`draw_image`; annotation authoring — `add_text_annotation/5`,
   > `add_free_text_annotation/5`, `add_square_annotation/4`, `add_link_annotation/5`,
   > `delete_annotation/3`; and `save_to_bytes/1` / `save_to_file/2`.
-  > Form-filling and the text-markup annotation family (highlight/underline/…) are
-  > not currently included.
+  > The text-markup annotation family (highlight/underline/…) is not currently included.
 
   > #### Untrusted input {: .warning}
   > pdfium runs **in-process** as a native library, so a genuine crash in it would
@@ -178,6 +179,9 @@ defmodule ExPdfium do
     * `:annotations` — draw annotations (default `true`); set `false` to render the
       page without its markup/widget overlay
     * `:form_fields` — draw interactive form-field content (default `true`)
+    * `:print_quality` — render with print-quality intent (default `false`).
+      Pdfium will use higher-resolution patterns and anti-aliasing suitable
+      for printing instead of screen display.
 
   ## Bitmap layout
 
@@ -657,6 +661,32 @@ defmodule ExPdfium do
 
   @doc group: :metadata
   @doc """
+  Set a page's boundary box (media, crop, bleed, trim, or art).
+
+  `box_type` is one of `:media_box`, `:crop_box`, `:bleed_box`, `:trim_box`,
+  `:art_box`. Coordinates are in PDF points with the origin at the page's
+  bottom-left corner.
+
+  ## Example
+
+      :ok = ExPdfium.set_page_box(doc, 0, :crop_box, 36, 36, 576, 756)
+
+  ## Errors
+    * `:page_out_of_bounds` — no such page index
+    * `:document_closed` — the document was closed
+    * `:bad_option` — invalid box type or rectangle
+  """
+  @spec set_page_box(Document.t(), non_neg_integer(), atom(), float(), float(), float(), float()) ::
+          :ok | {:error, atom()}
+  def set_page_box(%Document{ref: ref}, page_index, box_type, left, bottom, right, top) do
+    case Native.document_set_page_box(ref, page_index, box_type, left, bottom, right, top) do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc group: :metadata
+  @doc """
   Return the document's permission flags as a map of booleans.
 
   Keys: `:print_high_quality`, `:print_low_quality`, `:assemble`,
@@ -851,6 +881,64 @@ defmodule ExPdfium do
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  @doc group: :forms
+  @doc """
+  Set a form field's string value on a 0-indexed page.
+
+  Walks the page's annotations and sets the value on the first field whose
+  name matches `field_name`. The field must be a text field (other field types
+  return `{:error, :form_failed}`).
+
+  The value is applied to the field's /V entry; pdfium also updates the
+  modification date (/M). The change persists when the document is saved.
+
+  ## Example
+
+      :ok = ExPdfium.set_form_field_value(doc, 0, "Name", "Alice")
+
+  ## Errors
+    * `:page_out_of_bounds` — no such page index
+    * `:document_closed` — the document was closed
+    * `:form_failed` — no matching field, unsupported field type, or pdfium error
+  """
+  @spec set_form_field_value(Document.t(), non_neg_integer(), String.t(), String.t()) ::
+          :ok | {:error, atom()}
+  def set_form_field_value(%Document{ref: ref}, page_index, field_name, value) do
+    case Native.document_set_form_field_value(ref, page_index, field_name, value) do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc group: :forms
+  @doc """
+  Set a checkbox or radio-button form field's checked state on a 0-indexed page.
+
+  Walks the page's annotations and sets the state on the first field whose
+  name matches `field_name`. The field must be a checkbox or radio button (other
+  field types return `{:error, :form_failed}`).
+
+  For radio buttons the `checked` flag is not used; calling this function
+  checks the radio button regardless of the value passed.
+
+  ## Example
+
+      :ok = ExPdfium.set_form_field_checked(doc, 0, "Agree", true)
+
+  ## Errors
+    * `:page_out_of_bounds` — no such page index
+    * `:document_closed` — the document was closed
+    * `:form_failed` — no matching field, unsupported field type, or pdfium error
+  """
+  @spec set_form_field_checked(Document.t(), non_neg_integer(), String.t(), boolean()) ::
+          :ok | {:error, atom()}
+  def set_form_field_checked(%Document{ref: ref}, page_index, field_name, checked) do
+    case Native.document_set_form_field_checked(ref, page_index, field_name, checked) do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
     end
   end
 

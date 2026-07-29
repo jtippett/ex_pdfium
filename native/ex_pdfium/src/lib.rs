@@ -57,11 +57,18 @@ mod atoms {
         grayscale,
         annotations,
         form_fields,
+        print_quality,
         // render: option values
         rgba,
         bgra,
         white,
         transparent,
+        // page box type atoms
+        media_box,
+        crop_box,
+        bleed_box,
+        trim_box,
+        art_box,
         // render: errors
         page_out_of_bounds,
         render_failed,
@@ -576,6 +583,7 @@ struct RenderOpts {
     grayscale: bool,
     annotations: bool,
     form_fields: bool,
+    print_quality: bool,
 }
 
 impl RenderOpts {
@@ -621,6 +629,7 @@ impl RenderOpts {
         let grayscale = opt_bool(opts, atoms::grayscale())?.unwrap_or(false);
         let annotations = opt_bool(opts, atoms::annotations())?.unwrap_or(true);
         let form_fields = opt_bool(opts, atoms::form_fields())?.unwrap_or(true);
+        let print_quality = opt_bool(opts, atoms::print_quality())?.unwrap_or(false);
 
         Ok(RenderOpts {
             sizing,
@@ -629,6 +638,7 @@ impl RenderOpts {
             grayscale,
             annotations,
             form_fields,
+            print_quality,
         })
     }
 
@@ -668,6 +678,10 @@ impl RenderOpts {
         // but pdfium otherwise derives the output size from the page's MediaBox /
         // aspect ratio, so a hostile page (e.g. a 40000x40000 MediaBox) could still
         // drive a huge allocation. set_maximum_* scales the output down to fit.
+        if self.print_quality {
+            config = config.use_print_quality(true);
+        }
+
         config
             .use_grayscale_rendering(self.grayscale)
             .render_annotations(self.annotations)
@@ -1186,6 +1200,45 @@ fn document_page_info(
     })
 }
 
+/// v0.3: set a page boundary box (media, crop, bleed, trim, art).
+/// `box_type` is one of `:media_box`, `:crop_box`, `:bleed_box`, `:trim_box`, `:art_box`.
+/// Coordinates are in PDF points, origin bottom-left.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_set_page_box(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    box_type: Atom,
+    left: f64,
+    bottom: f64,
+    right: f64,
+    top: f64,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    if !valid_rect(left, bottom, right, top) {
+        return Err(atoms::bad_option());
+    }
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        let rect = PdfRect::new_from_values(bottom as f32, left as f32, top as f32, right as f32);
+        let boundaries = page.boundaries_mut();
+        match box_type {
+            a if a == atoms::media_box() => boundaries.set_media(rect),
+            a if a == atoms::crop_box() => boundaries.set_crop(rect),
+            a if a == atoms::bleed_box() => boundaries.set_bleed(rect),
+            a if a == atoms::trim_box() => boundaries.set_trim(rect),
+            a if a == atoms::art_box() => boundaries.set_art(rect),
+            _ => return Err(atoms::bad_option()),
+        }
+        .map_err(|_| atoms::bad_option())?;
+        Ok(atoms::ok())
+    })
+}
+
 /// Phase 4: document permissions, as `(key, bool)` pairs. An undeterminable
 /// permission fails closed with `:unsupported_security`.
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -1590,6 +1643,101 @@ fn document_form_fields(doc: ResourceArc<DocumentResource>) -> Result<Vec<FormFi
             }
         }
         Ok(fields)
+    })
+}
+
+/// v0.3: set a form field's string value (text, combo, list).
+/// Walks annotations on the given page; sets the value on the first field whose
+/// name matches `field_name`. The field must be a text/combo/list type.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_set_form_field_value(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    field_name: String,
+    value: String,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    validate_string(&field_name)?;
+    validate_string(&value)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        for i in 0..page.annotations().len() {
+            let mut annotation = page.annotations_mut().get(i).map_err(|_| atoms::form_failed())?;
+            let Some(field) = annotation.as_form_field_mut() else {
+                continue;
+            };
+            let is_match = field
+                .name()
+                .is_some_and(|n| n == field_name);
+            if !is_match {
+                continue;
+            }
+            match field.field_type() {
+                PdfFormFieldType::Text => {
+                    if let Some(text) = field.as_text_field_mut() {
+                        text.set_value(&value).map_err(|_| atoms::form_failed())?;
+                        return Ok(atoms::ok());
+                    }
+                }
+                _ => return Err(atoms::form_failed()),
+            }
+        }
+        Err(atoms::form_failed())
+    })
+}
+
+/// v0.3: set a checkbox or radio-button form field's checked state.
+/// Walks annotations on the given page; sets the state on the first field whose
+/// name matches `field_name`.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn document_set_form_field_checked(
+    doc: ResourceArc<DocumentResource>,
+    page_index: u32,
+    field_name: String,
+    checked: bool,
+) -> Result<Atom, Atom> {
+    let index = page_index_u16(page_index)?;
+    validate_string(&field_name)?;
+    with_pdfium(|_| {
+        let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
+        let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
+        let mut page = document
+            .pages()
+            .get(index)
+            .map_err(|_| atoms::page_out_of_bounds())?;
+        for i in 0..page.annotations().len() {
+            let mut annotation = page.annotations_mut().get(i).map_err(|_| atoms::form_failed())?;
+            let Some(field) = annotation.as_form_field_mut() else {
+                continue;
+            };
+            let is_match = field
+                .name()
+                .is_some_and(|n| n == field_name);
+            if !is_match {
+                continue;
+            }
+            match field.field_type() {
+                PdfFormFieldType::Checkbox => {
+                    if let Some(cb) = field.as_checkbox_field_mut() {
+                        cb.set_checked(checked).map_err(|_| atoms::form_failed())?;
+                        return Ok(atoms::ok());
+                    }
+                }
+                PdfFormFieldType::RadioButton => {
+                    if let Some(radio) = field.as_radio_button_field_mut() {
+                        radio.set_checked().map_err(|_| atoms::form_failed())?;
+                        return Ok(atoms::ok());
+                    }
+                }
+                _ => return Err(atoms::form_failed()),
+            }
+        }
+        Err(atoms::form_failed())
     })
 }
 

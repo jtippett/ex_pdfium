@@ -76,9 +76,9 @@ defmodule ExPdfium.ReleaseInvariantsTest do
       |> Enum.map(fn {name, _arity} -> Atom.to_string(name) end)
       |> MapSet.new()
 
-    assert MapSet.size(rust_exports) == 45
+    assert MapSet.size(rust_exports) == 48
     assert rust_exports == stub_exports
-    assert length(Regex.scan(~r/#\[rustler::nif\(schedule = "DirtyCpu"\)\]/, rust)) == 45
+    assert length(Regex.scan(~r/#\[rustler::nif\(schedule = "DirtyCpu"\)\]/, rust)) == 48
 
     native = File.read!(Path.join(@root, "lib/ex_pdfium/native.ex"))
     release = File.read!(Path.join(@root, ".github/workflows/release.yml"))
