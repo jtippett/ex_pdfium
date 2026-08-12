@@ -1878,11 +1878,13 @@ defmodule ExPdfiumTest do
       assert {:error, :page_out_of_bounds} = ExPdfium.extract_pages(src, [0, 9])
     end
 
-    test "a selection larger than the max page count is rejected up front" do
+    # pdfium-render 0.9 widened page indices from u16 to i32, so the old
+    # 65_535-page selection ceiling is gone; a selection this large is only
+    # bounded by i32::MAX now (unreachable from a test without ~16 GB of list).
+    test "a selection beyond the old u16 ceiling is accepted" do
       {:ok, src} = ExPdfium.open(@text)
-
-      assert {:error, :page_out_of_bounds} =
-               ExPdfium.extract_pages(src, List.duplicate(0, 70_000))
+      assert {:ok, doc} = ExPdfium.extract_pages(src, List.duplicate(0, 70_000))
+      assert {:ok, 70_000} = ExPdfium.page_count(doc)
     end
 
     test "an empty selection is rejected" do

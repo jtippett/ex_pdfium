@@ -15,8 +15,8 @@ concurrency:
 
 env:
   # pdfium binary pin. Must match pdfium-render's bound API (pdfium_latest ==
-  # pdfium_7543 for the pinned 0.8.37). Bump via UPDATE_PROCEDURE.
-  PDFIUM_TAG: "chromium/7543"
+  # pdfium_7881 for the pinned 0.9.3). Bump via UPDATE_PROCEDURE.
+  PDFIUM_TAG: "chromium/7881"
 
 jobs:
   test:

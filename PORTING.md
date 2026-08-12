@@ -160,11 +160,11 @@ Two things make this safe; use both:
   pdfium-touching operation, document close/drop included (`FPDF_CloseDocument`
   is a pdfium call). A concurrency test (fan-out open/count/close) is mandatory —
   it caught exactly this.
-- **The `sync` feature is still required**, but only for its `unsafe impl
-  Send + Sync` on `Pdfium`/`PdfDocument` (so they can live in a `static` /
-  `ResourceArc`). That `unsafe` is sound *because* `PDFIUM_LOCK` makes access
-  effectively single-threaded. (`sync` implies `thread_safe`; the Init/Destroy
-  bracketing is harmless.)
+- **The `thread_safe` feature is still required** (it was named `sync` before
+  pdfium-render 0.9), but only for its `unsafe impl Send + Sync` on
+  `Pdfium`/`PdfDocument` (so they can live in a `static` / `ResourceArc`). That
+  `unsafe` is sound *because* `PDFIUM_LOCK` makes access effectively
+  single-threaded.
 - **Initialize the `Pdfium` instance exactly once**, in a `OnceLock`, and hand
   out `&'static` references. Never construct it per call.
 

@@ -7,6 +7,17 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Changed
+
+- Bump `pdfium-render` `0.8.37` → `0.9.3` and the bundled/pinned pdfium binary
+  `chromium/7543` → `chromium/7881` (the API version 0.9.3 binds). Rendered
+  output is visually identical (verified by pixel diff over the fixture set;
+  max channel delta 2/255 on <0.4% of pixels) and text extraction is
+  byte-identical.
+- Page indices widened from `u16` to `i32` (upstream 0.9 change): documents
+  beyond 65,535 pages can now be rendered, extracted, merged, and appended to
+  instead of returning `{:error, :page_out_of_bounds}`.
+
 ## 0.5.1 - 2026-07-15
 
 ## 0.5.0 - 2026-07-15

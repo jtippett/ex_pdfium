@@ -7,8 +7,8 @@
 //! Three rules drive everything here:
 //!   1. pdfium is NOT thread-safe and the BEAM calls dirty NIFs from many OS
 //!      threads -> one global Pdfium instance, and every pdfium call serialized
-//!      through `PDFIUM_LOCK`. (The `sync`/`thread_safe` feature does NOT
-//!      serialize data calls — see `PDFIUM_LOCK`; we keep `sync` only for its
+//!      through `PDFIUM_LOCK`. (The `thread_safe` feature does NOT serialize
+//!      data calls — see `PDFIUM_LOCK`; we keep `thread_safe` only for its
 //!      `Send + Sync`, so the instance can live in a `static`.)
 //!   2. `PdfDocument<'a>` borrows from `Pdfium`. A `'static` Pdfium cached in a
 //!      OnceLock makes `PdfDocument<'static>` storable in a ResourceArc.
@@ -191,13 +191,13 @@ mod atoms {
 static PDFIUM: OnceLock<Result<Pdfium, ()>> = OnceLock::new();
 
 // Serializes EVERY pdfium operation. pdfium is not thread-safe, and — contrary to
-// what its name suggests — pdfium-render's `thread_safe`/`sync` feature only
-// brackets library Init/Destroy under a mutex; individual data calls
-// (load/page-count/render/close) run with NO lock. Since the BEAM calls our dirty
-// NIFs from a pool of OS threads, WE must serialize. Every pdfium-touching path
-// (including document close/drop) goes through this lock. The `sync` feature's
-// `unsafe impl Send + Sync` for Pdfium/PdfDocument is sound precisely because of
-// this discipline: access is effectively single-threaded.
+// what its name suggests — pdfium-render's `thread_safe` feature adds NO locking
+// around data calls (verified against 0.9.3: the dynamic bindings contain no
+// mutex; load/page-count/render/close all run unlocked). Since the BEAM calls our
+// dirty NIFs from a pool of OS threads, WE must serialize. Every pdfium-touching
+// path (including document close/drop) goes through this lock. The `thread_safe`
+// feature's `unsafe impl Send + Sync` for Pdfium/PdfDocument is sound precisely
+// because of this discipline: access is effectively single-threaded.
 static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
 
 // Closing a document (`FPDF_CloseDocument`) is a pdfium call, so it must run
@@ -205,7 +205,7 @@ static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
 // where blocking on a lock that a long render holds would stall the scheduler
 // past its budget. So `Drop` hands the document to this dedicated cleanup thread,
 // which closes it under the lock off-scheduler. `PdfDocument` is `Send` (the
-// `sync` feature), so moving it across the channel is sound.
+// `thread_safe` feature), so moving it across the channel is sound.
 static CLEANUP: OnceLock<Option<Mutex<std::sync::mpsc::Sender<PdfDocument<'static>>>>> =
     OnceLock::new();
 
@@ -364,7 +364,8 @@ fn set_dynamic_lib_dir(dir: String) -> Result<Atom, Atom> {
 // `Mutex<Option<…>>`: the Option lets `document_close` release the document
 // early (take it); the Mutex serializes multi-step ops on one document. The
 // `'static` Pdfium (above) makes `PdfDocument<'static>` storable here, and the
-// `sync` feature provides its `Send + Sync`. Dropping the resource on GC drops
+// `thread_safe` feature provides its `Send + Sync`. Dropping the resource on GC
+// drops
 // the document, which closes it in pdfium — so there's no manual-close leak.
 struct DocumentResource {
     doc: Mutex<Option<PdfDocument<'static>>>,
@@ -487,7 +488,7 @@ fn document_page_count(doc: ResourceArc<DocumentResource>) -> Result<u32, Atom> 
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         match guard.as_ref() {
-            Some(document) => Ok(u32::from(document.pages().len())),
+            Some(document) => Ok(page_count_u32(document)),
             None => Err(atoms::document_closed()),
         }
     })
@@ -778,9 +779,7 @@ fn document_render_page<'a>(
     opts: Term<'a>,
 ) -> Result<(Binary<'a>, u32, u32, u32, Atom), Atom> {
     let render = RenderOpts::from_term(opts)?;
-    let index: u16 = page_index
-        .try_into()
-        .map_err(|_| atoms::page_out_of_bounds())?;
+    let index = page_index_i32(page_index)?;
 
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
@@ -851,10 +850,17 @@ fn rect_of(b: &PdfRect) -> Rect {
     )
 }
 
-fn page_index_u16(page_index: u32) -> Result<u16, Atom> {
+// pdfium-render 0.9 types page indices as `PdfPageIndex` = c_int (i32).
+fn page_index_i32(page_index: u32) -> Result<PdfPageIndex, Atom> {
     page_index
         .try_into()
         .map_err(|_| atoms::page_out_of_bounds())
+}
+
+// `pages().len()` is a `PdfPageIndex` (i32) since pdfium-render 0.9. It can't
+// legitimately be negative; clamp defensively rather than panic or error.
+fn page_count_u32(document: &PdfDocument) -> u32 {
+    u32::try_from(document.pages().len()).unwrap_or(0)
 }
 
 /// Phase 3: plain text of one page.
@@ -863,7 +869,7 @@ fn document_extract_text(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
 ) -> Result<String, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -900,7 +906,7 @@ fn document_text_segments(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
 ) -> Result<Vec<(String, Rect)>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -965,7 +971,7 @@ fn document_text_chars(
     page_index: u32,
     with_style: bool,
 ) -> Result<Vec<TextChar>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1023,7 +1029,7 @@ fn document_search_text(
     match_case: bool,
     whole_word: bool,
 ) -> Result<Vec<(String, Vec<Rect>)>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     validate_string(&query)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
@@ -1130,7 +1136,7 @@ fn document_metadata(doc: ResourceArc<DocumentResource>) -> Result<DocumentMetad
         }
 
         let version = version_string(document.version());
-        let page_count = u32::from(document.pages().len());
+        let page_count = page_count_u32(document);
         let page_mode = page_mode_atom(document.pages().page_mode());
         Ok((pairs, version, page_count, page_mode))
     })
@@ -1151,7 +1157,7 @@ fn document_page_info(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
 ) -> Result<(f64, f64, i64, Option<String>, PageBoxes), Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1262,7 +1268,7 @@ fn build_bookmark(bookmark: &PdfBookmark, depth: usize, budget: &mut usize) -> B
     let page = bookmark
         .destination()
         .and_then(|d| d.page_index().ok())
-        .map(u32::from);
+        .and_then(|i| u32::try_from(i).ok());
 
     let mut children = Vec::new();
     if depth < MAX_OUTLINE_DEPTH {
@@ -1313,7 +1319,7 @@ type Link = (Option<Rect>, Option<String>, Option<u32>);
 /// destination (0-indexed); both may be nil.
 #[rustler::nif(schedule = "DirtyCpu")]
 fn document_links(doc: ResourceArc<DocumentResource>, page_index: u32) -> Result<Vec<Link>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1333,7 +1339,7 @@ fn document_links(doc: ResourceArc<DocumentResource>, page_index: u32) -> Result
                 let dest_page = link
                     .destination()
                     .and_then(|d| d.page_index().ok())
-                    .map(u32::from);
+                    .and_then(|i| u32::try_from(i).ok());
                 (bounds, uri, dest_page)
             })
             .collect();
@@ -1482,7 +1488,7 @@ fn document_annotations(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
 ) -> Result<Vec<Annotation>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1612,8 +1618,6 @@ fn bitmap_format_atom(f: PdfBitmapFormat) -> Atom {
         PdfBitmapFormat::BGR => atoms::bgr(),
         PdfBitmapFormat::BGRx => atoms::bgrx(),
         PdfBitmapFormat::BGRA => atoms::bgra(),
-        #[allow(deprecated)]
-        PdfBitmapFormat::BRGx => atoms::bgrx(),
     }
 }
 
@@ -1647,7 +1651,7 @@ fn document_page_objects(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
 ) -> Result<Vec<PageObject>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1692,7 +1696,7 @@ fn document_images(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
 ) -> Result<Vec<ImageInfo>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1727,7 +1731,7 @@ fn document_image_data(
     page_index: u32,
     object_index: u32,
 ) -> Result<(Binary<'_>, u32, u32, u32, Atom), Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1792,7 +1796,7 @@ fn document_image_raw_data(
     page_index: u32,
     object_index: u32,
 ) -> Result<Binary<'_>, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -1857,11 +1861,11 @@ fn document_append(
         let src_guard = src.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let dest_doc = dest_guard.as_mut().ok_or_else(atoms::document_closed)?;
         let src_doc = src_guard.as_ref().ok_or_else(atoms::document_closed)?;
-        // Page indices are u16 in pdfium-render; refuse a merge that would exceed
-        // that ceiling rather than overflow the page-index cache (u32 sum avoids
-        // overflowing the check itself).
-        if u32::from(dest_doc.pages().len()) + u32::from(src_doc.pages().len())
-            > u32::from(u16::MAX)
+        // Page indices are c_int (i32) in pdfium-render 0.9; refuse a merge that
+        // would exceed that ceiling rather than overflow pdfium's page-index
+        // space (i64 sum avoids overflowing the check itself).
+        if i64::from(dest_doc.pages().len()) + i64::from(src_doc.pages().len())
+            > i64::from(PdfPageIndex::MAX)
         {
             return Err(atoms::page_out_of_bounds());
         }
@@ -1884,16 +1888,16 @@ fn document_extract_pages(
     if indices.is_empty() {
         return Err(atoms::empty_selection());
     }
-    // A PDF can hold at most u16::MAX pages, and the dest index is a u16. Reject an
-    // oversized selection up front rather than copying tens of thousands of pages
-    // into a huge partial document only to fail at the u16 conversion below.
-    if indices.len() > u16::MAX as usize {
+    // A PDF can hold at most i32::MAX pages, and the dest index is an i32. Reject
+    // an oversized selection up front rather than copying pages into a huge
+    // partial document only to fail at the i32 conversion below.
+    if indices.len() > PdfPageIndex::MAX as usize {
         return Err(atoms::page_out_of_bounds());
     }
     with_pdfium(|pdfium| {
         let src_guard = src.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let src_doc = src_guard.as_ref().ok_or_else(atoms::document_closed)?;
-        let count = u32::from(src_doc.pages().len());
+        let count = page_count_u32(src_doc);
         for &i in &indices {
             if i >= count {
                 return Err(atoms::page_out_of_bounds());
@@ -1904,8 +1908,9 @@ fn document_extract_pages(
             .create_new_pdf()
             .map_err(|_| atoms::create_failed())?;
         for (dest_idx, &src_idx) in indices.iter().enumerate() {
-            let src_i = u16::try_from(src_idx).map_err(|_| atoms::page_out_of_bounds())?;
-            let dest_i = u16::try_from(dest_idx).map_err(|_| atoms::page_out_of_bounds())?;
+            let src_i = PdfPageIndex::try_from(src_idx).map_err(|_| atoms::page_out_of_bounds())?;
+            let dest_i =
+                PdfPageIndex::try_from(dest_idx).map_err(|_| atoms::page_out_of_bounds())?;
             new_doc
                 .pages_mut()
                 .copy_page_from_document(src_doc, src_i, dest_i)
@@ -1928,7 +1933,7 @@ fn document_delete_pages(
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
-        let count = u32::from(document.pages().len());
+        let count = page_count_u32(document);
         if from > to || to >= count {
             return Err(atoms::page_out_of_bounds());
         }
@@ -1941,7 +1946,7 @@ fn document_delete_pages(
         // stay valid as pages are removed. (`PdfPage::delete` is the non-
         // deprecated path; the `PdfPages` range delete is deprecated.)
         for i in (from..=to).rev() {
-            let idx = u16::try_from(i).map_err(|_| atoms::page_out_of_bounds())?;
+            let idx = PdfPageIndex::try_from(i).map_err(|_| atoms::page_out_of_bounds())?;
             let page = document
                 .pages()
                 .get(idx)
@@ -1966,7 +1971,7 @@ fn document_rotate_page(
         270 => PdfPageRenderRotation::Degrees270,
         _ => return Err(atoms::bad_rotation()),
     };
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;
@@ -2043,7 +2048,7 @@ fn bytes_per_pixel(f: PdfBitmapFormat) -> usize {
 // first (it needs the document), then adds it to the page; if the page were
 // missing, the orphaned, never-added object would be dropped — which pdfium does
 // not handle cleanly. So check the page exists up front.
-fn check_page(document: &PdfDocument, page_index: u16) -> Result<(), Atom> {
+fn check_page(document: &PdfDocument, page_index: PdfPageIndex) -> Result<(), Atom> {
     if page_index < document.pages().len() {
         Ok(())
     } else {
@@ -2054,7 +2059,7 @@ fn check_page(document: &PdfDocument, page_index: u16) -> Result<(), Atom> {
 // Add a freshly-built object to a page and commit the page content atomically.
 fn add_to_page(
     document: &PdfDocument,
-    page_index: u16,
+    page_index: PdfPageIndex,
     object: PdfPageObject,
 ) -> Result<Atom, Atom> {
     attach_then_style(document, page_index, object, |_| Ok(()))
@@ -2067,7 +2072,7 @@ fn add_to_page(
 // the attached object before returning; success regenerates exactly once.
 fn attach_then_style(
     document: &PdfDocument,
-    page_index: u16,
+    page_index: PdfPageIndex,
     object: PdfPageObject,
     style: impl FnOnce(&mut PdfPageObject) -> Result<(), Atom>,
 ) -> Result<Atom, Atom> {
@@ -2138,8 +2143,8 @@ fn document_add_page(
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_mut().ok_or_else(atoms::document_closed)?;
-        // u16 page-index ceiling: refuse to add a page to an already-full document.
-        if document.pages().len() == u16::MAX {
+        // i32 page-index ceiling: refuse to add a page to an already-full document.
+        if document.pages().len() == PdfPageIndex::MAX {
             return Err(atoms::page_out_of_bounds());
         }
         let size = PdfPagePaperSize::from_points(
@@ -2152,7 +2157,7 @@ fn document_add_page(
                 .create_page_at_end(size)
                 .map_err(|_| atoms::create_failed())?;
         } else {
-            let idx = u16::try_from(at).map_err(|_| atoms::page_out_of_bounds())?;
+            let idx = PdfPageIndex::try_from(at).map_err(|_| atoms::page_out_of_bounds())?;
             document
                 .pages_mut()
                 .create_page_at_index(size, idx)
@@ -2175,7 +2180,7 @@ fn document_draw_text(
     size: f64,
     color: (u8, u8, u8, u8),
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     let builtin = font_builtin(&font).ok_or_else(atoms::unknown_font)?;
     validate_string(&text)?;
     if !valid_f32(x) || !valid_f32(y) || !valid_positive_f32(size) {
@@ -2211,7 +2216,7 @@ fn document_draw_rectangle(
     stroke: Option<(u8, u8, u8, u8)>,
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     if !valid_rect(left, bottom, right, top)
         || (stroke.is_some() && !valid_stroke_width(stroke_width))
     {
@@ -2247,7 +2252,7 @@ fn document_draw_line(
     stroke: (u8, u8, u8, u8),
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     if ![x1, y1, x2, y2].into_iter().all(valid_f32) || !valid_stroke_width(stroke_width) {
         return Err(atoms::bad_option());
     }
@@ -2282,7 +2287,7 @@ fn document_draw_circle(
     stroke: Option<(u8, u8, u8, u8)>,
     stroke_width: f64,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     // pdfium-render's `new_circle_at` derives the bounding box as `cx ± radius`
     // and `cy ± radius` in f32, so guarding only the inputs is insufficient: a
     // finite-but-large center/radius pair (e.g. 3.0e38 each) can still overflow a
@@ -2334,7 +2339,7 @@ fn document_draw_image(
     right: f64,
     top: f64,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     let (pdf_format, swap_rb) =
         image_format(&format).ok_or_else(atoms::unsupported_image_format)?;
     if img_width == 0 || img_height == 0 {
@@ -2398,13 +2403,12 @@ fn document_draw_image(
         check_page(document, index)?;
         let width = i32::try_from(img_width).map_err(|_| atoms::bad_image_data())?;
         let height = i32::try_from(img_height).map_err(|_| atoms::bad_image_data())?;
-        // SAFETY: `buffer` is exactly `stride * height` bytes with pdfium's
-        // 4-byte-aligned row stride (built above), matching what pdfium reads, and
-        // it outlives the bitmap; set_bitmap copies the pixels out before drop.
-        let bitmap = unsafe {
-            PdfBitmap::from_bytes(width, height, pdf_format, &mut buffer, document.bindings())
-        }
-        .map_err(|_| atoms::image_failed())?;
+        // `buffer` is exactly `stride * height` bytes with pdfium's 4-byte-aligned
+        // row stride (built above), and it outlives the bitmap; set_bitmap copies
+        // the pixels out before drop. (0.9's `from_bytes` is safe: it recomputes
+        // the stride and rejects a too-small buffer itself.)
+        let bitmap = PdfBitmap::from_bytes(width, height, pdf_format, &mut buffer)
+            .map_err(|_| atoms::image_failed())?;
 
         let object = PdfPageImageObject::new(&*document).map_err(|_| atoms::draw_failed())?;
         attach_then_style(document, index, object.into(), |obj| {
@@ -2461,7 +2465,7 @@ fn document_add_text_annotation(
     text: String,
     color: (u8, u8, u8, u8),
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     validate_string(&text)?;
     if !valid_f32(x) || !valid_f32(y) {
         return Err(atoms::bad_option());
@@ -2508,7 +2512,7 @@ fn document_add_free_text_annotation(
     fill: Option<(u8, u8, u8, u8)>,
     stroke: Option<(u8, u8, u8, u8)>,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     validate_string(&text)?;
     if !valid_rect(l, b, r, t) {
         return Err(atoms::bad_option());
@@ -2562,7 +2566,7 @@ fn document_add_square_annotation(
     fill: Option<(u8, u8, u8, u8)>,
     stroke: Option<(u8, u8, u8, u8)>,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     if !valid_rect(l, b, r, t) {
         return Err(atoms::bad_option());
     }
@@ -2614,7 +2618,7 @@ fn document_add_link_annotation(
     t: f64,
     uri: String,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     validate_string(&uri)?;
     if !valid_rect(l, b, r, t) {
         return Err(atoms::bad_option());
@@ -2651,7 +2655,7 @@ fn document_delete_annotation(
     page_index: u32,
     annot_index: u32,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     let annot_index = usize::try_from(annot_index).map_err(|_| atoms::annotation_not_found())?;
     with_pdfium(|_| {
         let mut guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
@@ -2686,7 +2690,7 @@ fn document_flatten_page(
     doc: ResourceArc<DocumentResource>,
     page_index: u32,
 ) -> Result<Atom, Atom> {
-    let index = page_index_u16(page_index)?;
+    let index = page_index_i32(page_index)?;
     with_pdfium(|_| {
         let guard = doc.doc.lock().map_err(|_| atoms::lock_poisoned())?;
         let document = guard.as_ref().ok_or_else(atoms::document_closed)?;

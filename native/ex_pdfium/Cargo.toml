@@ -16,16 +16,16 @@ crate-type = ["cdylib"]
 # DEV/TEST default: dynamic binding. pdfium-render compiles with NO pdfium
 # present and loads libpdfium at runtime (Pdfium::bind_to_library).
 #
-# `sync` is load-bearing and must always be on. We keep ONE global Pdfium in a
-# `static`, which needs `unsafe impl Send + Sync for Pdfium` — and pdfium-render
-# gates that impl behind `sync` (plain `thread_safe` leaves Pdfium `!Send`/`!Sync`
-# and it won't compile in a `static`). NOTE: do NOT assume `sync`/`thread_safe`
-# serializes pdfium calls — verified against 0.8.37, it only brackets library
-# Init/Destroy; individual data calls run unlocked. We serialize every call with
-# our own global lock in src/lib.rs (`PDFIUM_LOCK`). So `sync` here is purely for
-# the Send+Sync markers.
-default = ["sync"]
-sync = ["pdfium-render/sync"]
+# `thread_safe` is load-bearing and must always be on. We keep ONE global Pdfium
+# in a `static`, which needs `unsafe impl Send + Sync for Pdfium` — and
+# pdfium-render gates that impl behind `thread_safe` (0.9.x removed the old
+# `sync` feature and moved the Send+Sync markers here). NOTE: do NOT assume
+# `thread_safe` serializes pdfium calls — verified against 0.9.3, the dynamic
+# bindings contain no mutex; individual data calls run unlocked. We serialize
+# every call with our own global lock in src/lib.rs (`PDFIUM_LOCK`). So
+# `thread_safe` here is purely for the Send+Sync markers.
+default = ["thread_safe"]
+thread_safe = ["pdfium-render/thread_safe"]
 
 # OPTIONAL static linking. NOTE: the shipped release does NOT use these — it
 # bundles the dynamic libpdfium beside the NIF (bblanchon publishes no static
@@ -33,7 +33,7 @@ sync = ["pdfium-render/sync"]
 # supplies their own libpdfium.a via PDFIUM_STATIC_LIB_PATH. `static` needs that
 # env var at build time; the C++ stdlib differs by target — pick exactly one:
 #   linux-gnu/musl -> libstdcpp ; apple-darwin -> libcpp. Verified against
-# pdfium-render 0.8.37: `libc++`/`libstdc++` each already imply `static`.
+# pdfium-render 0.9.3: `libc++`/`libstdc++` each already imply `static`.
 static = ["pdfium-render/static"]
 libstdcpp = ["pdfium-render/libstdc++"]
 libcpp = ["pdfium-render/libc++"]
@@ -45,14 +45,12 @@ rustler = "0.38"
 libc = "0.2"
 
 # pdfium-render is published to crates.io; pin it exactly (bump via UPDATE_PROCEDURE).
-# 0.8.37 is the latest 0.8.x (`cargo add` resolved it); 0.9.x exists but reworks the
-# binding API — bump deliberately, not incidentally.
 #
 # `default-features = false` drops the crate's heavy `image` default (the `image`
 # crate + its deps), which we don't need yet. But the default ALSO carries a
-# mandatory pdfium API-version feature (`pdfium_latest` -> `pdfium_7543`): without
+# mandatory pdfium API-version feature (`pdfium_latest` -> `pdfium_7881`): without
 # one selected, pdfium-render has no FFI surface to bind. So re-add it here as a
 # non-optional dependency feature, so it's always on regardless of which crate
 # features are toggled. Keep the bundled pdfium binary (PDFIUM_TAG) at
-# chromium/7543 to match this API version.
-pdfium-render = { version = "=0.8.37", default-features = false, features = ["pdfium_latest"] }
+# chromium/7881 to match this API version.
+pdfium-render = { version = "=0.9.3", default-features = false, features = ["pdfium_latest"] }

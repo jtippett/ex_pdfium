@@ -59,11 +59,14 @@ separately-installed pdfium**, dev libpdfium hidden.
 ### What Phase 0 (dev) settled — corrections to scaffold assumptions
 - **`pdfium-render` pinned `=0.8.37`** (latest 0.8.x). 0.9.x exists but reworks
   the binding API — treat as a deliberate future bump (UPDATE_PROCEDURE Part A).
+  *(Since done: pinned `=0.9.3` as of 2026-08-12; see UPDATE_PROCEDURE.)*
 - **Use the `sync` feature, NOT `thread_safe`.** Verified in 0.8.37 source: the
   `unsafe impl Send + Sync for Pdfium` is gated on `sync`; `thread_safe` alone
   only adds the per-call mutex and leaves `Pdfium` `!Send`/`!Sync`, which won't
   compile in a `static`. `sync` implies `thread_safe`. (Cargo.toml + release.yml
-  updated.)
+  updated.) *(Superseded by the 0.9.3 bump: 0.9.x removed `sync` and moved the
+  Send+Sync markers behind `thread_safe`, which still adds no per-call locking —
+  `PDFIUM_LOCK` remains load-bearing.)*
 - **pdfium binary pin bumped `chromium/7506` → `chromium/7543`** to match the API
   version pdfium-render 0.8.37 binds (`pdfium_latest` == `pdfium_7543`). 7506 is
   older than the bound API → unresolved symbols at dlopen. (4 files updated.)

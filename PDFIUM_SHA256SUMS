@@ -1,5 +1,5 @@
-# bblanchon/pdfium-binaries immutable release chromium/7543
-4965a4c0b64c45b5edefa1072e2b483bf90b4d25d7deec44f104dcbdecf05c3e  pdfium-linux-arm64.tgz
-9329a3c4b19b3c8d0a93af5440f44be84e4bd879a204e47b1a7a160e96809da4  pdfium-linux-x64.tgz
-41c269723b4711793de70ff34e65c00fa79907d6c023741837579e906b846faa  pdfium-mac-arm64.tgz
-2510460ac106f14b884598a0da3f53a99e23d79512acf027c5e101c2bb2f26cb  pdfium-mac-x64.tgz
+# bblanchon/pdfium-binaries immutable release chromium/7881
+ee7f7b7d5468958336a818c1cd580bdd20972846b7377b13f9a923d92d1d4674  pdfium-linux-arm64.tgz
+1470e21b8b4a3b4ad7f85684e2da11d94f3b69a86d81dee11b9b6709d927ac1d  pdfium-linux-x64.tgz
+52e94ca5aa8847934330daf3f8150c190682c5ca93831468794f8b90d4392e40  pdfium-mac-arm64.tgz
+6dedf83990e0e3d6b7c93c9e7589c5a126b0ae14b7464d76120cff7a26afb18b  pdfium-mac-x64.tgz
