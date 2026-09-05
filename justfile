@@ -14,6 +14,6 @@ fmt:
     cd native/ex_pdfium && cargo fmt
 
 # Download a dynamic libpdfium for local dev/test into priv/pdfium (set the tag).
-# Tag matches pdfium-render's bound API version (pdfium_latest == pdfium_7543).
-fetch-pdfium tag="chromium/7543":
+# Tag matches pdfium-render's bound API version (pdfium_latest == pdfium_7881).
+fetch-pdfium tag="chromium/7881":
     scripts/fetch-pdfium-dev.sh {{tag}}
