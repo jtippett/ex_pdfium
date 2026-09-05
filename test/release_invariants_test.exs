@@ -29,6 +29,7 @@ defmodule ExPdfium.ReleaseInvariantsTest do
 
   test "the pinned pdfium assets have complete digests used by CI and release builds" do
     sums = File.read!(Path.join(@root, "PDFIUM_SHA256SUMS"))
+    [_, tag] = Regex.run(~r/^# .* (chromium\/\d+)$/m, sums)
 
     assets =
       for line <- String.split(sums, "\n"),
@@ -46,9 +47,17 @@ defmodule ExPdfium.ReleaseInvariantsTest do
              String.match?(digest, ~r/^[0-9a-f]{64}$/)
            end)
 
+    fetch_script = File.read!(Path.join(@root, "scripts/fetch-pdfium-dev.sh"))
+    justfile = File.read!(Path.join(@root, "justfile"))
+
+    assert tag == "chromium/7881"
+    assert fetch_script =~ ~s(TAG="${1:-#{tag}}")
+    assert fetch_script =~ ~s(if [[ "$TAG" != "#{tag}" ]])
+    assert justfile =~ ~s(fetch-pdfium tag="#{tag}")
+
     for file <- [".github/workflows/ci.yml", ".github/workflows/release.yml"] do
       workflow = File.read!(Path.join(@root, file))
-      assert workflow =~ ~s(PDFIUM_TAG: "chromium/7881")
+      assert workflow =~ ~s(PDFIUM_TAG: "#{tag}")
       assert workflow =~ "PDFIUM_SHA256SUMS"
       assert workflow =~ "shasum -a 256"
 
