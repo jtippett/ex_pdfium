@@ -16,8 +16,8 @@ permissions:
 
 env:
   # The pdfium binary release to bundle. Must match pdfium-render's bound API
-  # (pdfium_latest == pdfium_7881 for the pinned 0.9.3). Bump via UPDATE_PROCEDURE.md.
-  PDFIUM_TAG: "chromium/7881"
+  # (pdfium_latest == pdfium_8125 for the pinned 0.9.5). Bump via UPDATE_PROCEDURE.md.
+  PDFIUM_TAG: "chromium/8125"
 
 jobs:
   build:

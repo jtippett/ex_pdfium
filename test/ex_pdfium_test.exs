@@ -540,11 +540,11 @@ defmodule ExPdfiumTest do
       assert meta.keywords == "pdf, test, meta"
       assert meta.creator == "ExPdfium Suite"
       assert meta.producer == "Hand Rolled"
-      # creation_date is a raw PDF date string (D:YYYYMMDD...). modification_date
-      # relies on pdfium-render's "ModificationDate" tag, which doesn't match the
-      # standard /ModDate key, so it stays nil here — see the moduledoc.
-      assert meta.creation_date =~ "2024"
-      assert meta.modification_date == nil
+      # Both dates are raw PDF date strings (D:YYYYMMDD...). modification_date
+      # reads the standard /ModDate key as of pdfium-render 0.9.5 (earlier
+      # versions queried a non-standard "ModificationDate" tag and returned nil).
+      assert meta.creation_date == "D:20240115120000Z"
+      assert meta.modification_date == "D:20240116130000Z"
     end
 
     test "metadata/1 includes document-level properties" do

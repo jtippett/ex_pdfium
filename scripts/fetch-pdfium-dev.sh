@@ -7,11 +7,11 @@
 # Keep the tag in sync with release.yml's PDFIUM_TAG and UPDATE_PROCEDURE.md.
 set -euo pipefail
 
-TAG="${1:-chromium/7881}"
+TAG="${1:-chromium/8125}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/priv/pdfium"
 
-if [[ "$TAG" != "chromium/7881" ]]; then
+if [[ "$TAG" != "chromium/8125" ]]; then
   echo "unsupported unverified tag: $TAG (update PDFIUM_SHA256SUMS and the pinned tag first)" >&2
   exit 1
 fi

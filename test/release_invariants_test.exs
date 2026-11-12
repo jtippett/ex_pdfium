@@ -48,7 +48,7 @@ defmodule ExPdfium.ReleaseInvariantsTest do
 
     for file <- [".github/workflows/ci.yml", ".github/workflows/release.yml"] do
       workflow = File.read!(Path.join(@root, file))
-      assert workflow =~ ~s(PDFIUM_TAG: "chromium/7881")
+      assert workflow =~ ~s(PDFIUM_TAG: "chromium/8125")
       assert workflow =~ "PDFIUM_SHA256SUMS"
       assert workflow =~ "shasum -a 256"
 
@@ -92,7 +92,7 @@ defmodule ExPdfium.ReleaseInvariantsTest do
     assert release =~ "nif-2.15"
     assert cargo =~ ~s(rustler = "0.38")
     assert cargo =~ ~s(default = ["thread_safe"])
-    assert cargo =~ ~s(version = "=0.9.3")
+    assert cargo =~ ~s(version = "=0.9.5")
     assert cargo =~ ~s(features = ["pdfium_latest"])
   end
 end

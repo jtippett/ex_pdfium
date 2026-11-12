@@ -547,7 +547,7 @@ defmodule ExPdfium do
         title: "…", author: "…", subject: nil, keywords: nil,
         creator: "…", producer: "…",
         creation_date: "D:20240115120000Z",  # raw PDF date string — parse_pdf_date/1
-        modification_date: nil,
+        modification_date: "D:20240116130000Z",
         # document-level properties — always present
         version: "1.7",                       # PDF version, or nil if undeclared
         page_count: 12,
@@ -563,10 +563,6 @@ defmodule ExPdfium do
   > through it: custom/non-standard `/Info` keys (pdfium can't enumerate dictionary
   > keys, and only the eight standard ones are queryable), and **XMP** metadata
   > (the `/Metadata` XML stream) — pdfium has no XMP API.
-
-  > #### `:modification_date` caveat {: .warning}
-  > pdfium-render reads this from a `"ModificationDate"` tag rather than the
-  > PDF-standard `/ModDate` key, so it is `nil` for most real-world documents.
   """
   @spec metadata(Document.t()) :: {:ok, map()} | {:error, atom()}
   def metadata(%Document{ref: ref}) do

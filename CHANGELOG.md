@@ -7,6 +7,20 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+### Changed
+
+- Bump `pdfium-render` `0.9.3` → `0.9.5` and the bundled/pinned pdfium binary
+  `chromium/7881` → `chromium/8125` (the API version 0.9.5 binds). Rendered
+  output and text extraction are byte-identical across the fixture set.
+  Picks up upstream fixes for two double-frees (font and page-object handling),
+  a bitmap-buffer length overflow, and a page-index-cache edge case.
+
+### Fixed
+
+- `metadata/1` now returns `:modification_date` from the PDF-standard `/ModDate`
+  key (upstream fix in `pdfium-render` 0.9.5). It was previously `nil` for
+  nearly all documents.
+
 ## 0.6.0 - 2026-08-12
 
 ### Changed

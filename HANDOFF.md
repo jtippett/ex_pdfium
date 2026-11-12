@@ -132,8 +132,9 @@ permissions return `Vec<(Atom, value)>` lists; Elixir builds maps. 54 tests.
 - `permissions/1` returns `{:error, :unsupported_security}` for AES-256/PDF-2.0
   (security-handler revisions 5-6) — pdfium-render can't read those, so every
   `can_*` errors; we surface that instead of a misleading all-false set.
-- `modification_date` is usually nil: pdfium-render queries `"ModificationDate"`,
-  not the PDF-standard `/ModDate`. (`creation_date` works.)
+- `modification_date` was usually nil before pdfium-render 0.9.5 (it queried
+  `"ModificationDate"`, not the PDF-standard `/ModDate`). *(Fixed upstream in
+  0.9.5; it now returns the `/ModDate` string.)*
 - pdfium gives no crop→media fallback; undefined boxes are nil.
 
 ### Phase 5 done — structure & navigation (committed)

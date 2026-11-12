@@ -7,9 +7,10 @@
 //! Three rules drive everything here:
 //!   1. pdfium is NOT thread-safe and the BEAM calls dirty NIFs from many OS
 //!      threads -> one global Pdfium instance, and every pdfium call serialized
-//!      through `PDFIUM_LOCK`. (The `thread_safe` feature does NOT serialize
-//!      data calls — see `PDFIUM_LOCK`; we keep `thread_safe` only for its
-//!      `Send + Sync`, so the instance can live in a `static`.)
+//!      through `PDFIUM_LOCK`. (The `thread_safe` feature only locks each
+//!      FPDF_* call individually, not whole operations — see `PDFIUM_LOCK`; we
+//!      keep `thread_safe` for its `Send + Sync`, so the instance can live in
+//!      a `static`.)
 //!   2. `PdfDocument<'a>` borrows from `Pdfium`. A `'static` Pdfium cached in a
 //!      OnceLock makes `PdfDocument<'static>` storable in a ResourceArc.
 //!   3. pdfium work is synchronous and CPU-heavy -> every NIF is DirtyCpu.
@@ -190,11 +191,13 @@ mod atoms {
 // every NIF goes through `pdfium()`.
 static PDFIUM: OnceLock<Result<Pdfium, ()>> = OnceLock::new();
 
-// Serializes EVERY pdfium operation. pdfium is not thread-safe, and — contrary to
-// what its name suggests — pdfium-render's `thread_safe` feature adds NO locking
-// around data calls (verified against 0.9.3: the dynamic bindings contain no
-// mutex; load/page-count/render/close all run unlocked). Since the BEAM calls our
-// dirty NIFs from a pool of OS threads, WE must serialize. Every pdfium-touching
+// Serializes EVERY pdfium operation. pdfium is not thread-safe, and pdfium-render's
+// `thread_safe` feature is not enough on its own: 0.9.3 had no locking at all, and
+// 0.9.4+ (verified against 0.9.5) only wraps each individual FPDF_* call in a
+// mutex — nothing is held across a multi-call operation such as load -> render ->
+// close. Since the BEAM calls our dirty NIFs from a pool of OS threads, WE must
+// serialize whole operations. This lock is always taken before pdfium-render's
+// per-call mutex, so the two nest in one fixed order. Every pdfium-touching
 // path (including document close/drop) goes through this lock. The `thread_safe`
 // feature's `unsafe impl Send + Sync` for Pdfium/PdfDocument is sound precisely
 // because of this discipline: access is effectively single-threaded.

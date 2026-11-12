@@ -41,7 +41,7 @@ Release archives bundle a **dynamic** libpdfium beside the NIF; dev/test loads t
 same library layout from `priv/pdfium`. Both come from
 https://github.com/bblanchon/pdfium-binaries/releases.
 
-- The current pinned tag is `chromium/7881`. Keep `.github/workflows/ci.yml`,
+- The current pinned tag is `chromium/8125`. Keep `.github/workflows/ci.yml`,
   `.github/workflows/release.yml`, `scripts/fetch-pdfium-dev.sh`, and
   `PDFIUM_SHA256SUMS` in sync.
 - To bump: pick a newer immutable `chromium/NNNN` release, update the tag and all

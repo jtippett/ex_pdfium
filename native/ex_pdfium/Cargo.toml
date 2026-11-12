@@ -19,11 +19,15 @@ crate-type = ["cdylib"]
 # `thread_safe` is load-bearing and must always be on. We keep ONE global Pdfium
 # in a `static`, which needs `unsafe impl Send + Sync for Pdfium` — and
 # pdfium-render gates that impl behind `thread_safe` (0.9.x removed the old
-# `sync` feature and moved the Send+Sync markers here). NOTE: do NOT assume
-# `thread_safe` serializes pdfium calls — verified against 0.9.3, the dynamic
-# bindings contain no mutex; individual data calls run unlocked. We serialize
-# every call with our own global lock in src/lib.rs (`PDFIUM_LOCK`). So
-# `thread_safe` here is purely for the Send+Sync markers.
+# `sync` feature and moved the Send+Sync markers here). NOTE: do NOT rely on
+# `thread_safe` to serialize pdfium work. 0.9.3 had no mutex at all; 0.9.4+
+# (verified against 0.9.5, src/bindings/thread_safe.rs) wraps each individual
+# FPDF_* call in a global mutex, but that lock is per-call — it does not hold
+# across a multi-call operation (load -> render -> close). We serialize every
+# operation with our own global lock in src/lib.rs (`PDFIUM_LOCK`), always
+# taken first, so the two locks nest in one fixed order. Never call pdfium from
+# inside a reader/writer/font-provider callback: the per-call mutex is not
+# reentrant and would deadlock.
 default = ["thread_safe"]
 thread_safe = ["pdfium-render/thread_safe"]
 
@@ -33,7 +37,7 @@ thread_safe = ["pdfium-render/thread_safe"]
 # supplies their own libpdfium.a via PDFIUM_STATIC_LIB_PATH. `static` needs that
 # env var at build time; the C++ stdlib differs by target — pick exactly one:
 #   linux-gnu/musl -> libstdcpp ; apple-darwin -> libcpp. Verified against
-# pdfium-render 0.9.3: `libc++`/`libstdc++` each already imply `static`.
+# pdfium-render 0.9.5: `libc++`/`libstdc++` each already imply `static`.
 static = ["pdfium-render/static"]
 libstdcpp = ["pdfium-render/libstdc++"]
 libcpp = ["pdfium-render/libc++"]
@@ -48,9 +52,9 @@ libc = "0.2"
 #
 # `default-features = false` drops the crate's heavy `image` default (the `image`
 # crate + its deps), which we don't need yet. But the default ALSO carries a
-# mandatory pdfium API-version feature (`pdfium_latest` -> `pdfium_7881`): without
+# mandatory pdfium API-version feature (`pdfium_latest` -> `pdfium_8125`): without
 # one selected, pdfium-render has no FFI surface to bind. So re-add it here as a
 # non-optional dependency feature, so it's always on regardless of which crate
 # features are toggled. Keep the bundled pdfium binary (PDFIUM_TAG) at
-# chromium/7881 to match this API version.
-pdfium-render = { version = "=0.9.3", default-features = false, features = ["pdfium_latest"] }
+# chromium/8125 to match this API version.
+pdfium-render = { version = "=0.9.5", default-features = false, features = ["pdfium_latest"] }
