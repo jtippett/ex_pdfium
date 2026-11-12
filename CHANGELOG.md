@@ -7,6 +7,8 @@ not pdfium-render's).
 
 ## [Unreleased]
 
+## 0.7.0 - 2026-11-12
+
 ### Changed
 
 - Bump `pdfium-render` `0.9.3` → `0.9.5` and the bundled/pinned pdfium binary
